@@ -119,9 +119,58 @@ def check_topt_representation(topt_representation):
 def is_tensor_option(argument):
     return argument['name'] in ['dtype', 'layout', 'device', 'pin_memory']
 
+def collapseFormalsTO(formals):
+    if ('ScalarType' in f for f in formals) and \
+       ('Layout' in f for f in formals) and \
+       ('Device' in f for f in formals) and \
+       ('bool' in f for f in formals):
+
+        index = -1
+
+        if index == -1:
+            index = formals.index('c10::optional<at::ScalarType> dtype = c10::nullopt') if 'c10::optional<at::ScalarType> dtype = c10::nullopt' in formals else -1
+            if index != -1:
+                formals.insert(index + 4, 'const at::TensorOptions & options = {}')
+
+        if index == -1:
+            index = formals.index('c10::optional<at::ScalarType> dtype = at::kLong') if 'c10::optional<at::ScalarType> dtype = at::kLong' in formals else -1
+            if index != -1:
+                formals.insert(index + 4, 'const at::TensorOptions & options = at::kLong')
+
+        if index == -1:
+            index = formals.index('at::ScalarType dtype') if 'at::ScalarType dtype' in formals else -1
+            if index != -1:
+                formals.insert(index + 4, 'const at::TensorOptions & options')
+
+        if index != -1:
+            formals.pop(index + 3)
+            formals.pop(index + 2)
+            formals.pop(index + 1)
+            formals.pop(index)
+    return formals
+
+def collapseActualsTO(actuals):
+    if 'dtype' in actuals and \
+       'layout' in actuals and \
+       'device' in actuals and \
+       'pin_memory' in actuals:
+       index = actuals.index('dtype')
+       if index != -1:
+           actuals.pop(index + 3)
+           actuals.pop(index + 2)
+           actuals.pop(index + 1)
+           actuals.pop(index)
+           actuals.insert(index, 'at::TensorOptions(options).is_variable(false)')
+
+    return actuals
+
 def process_function(decl, is_tensor_option):
     formals = []
     actuals = []
+    foo = decl['name'] == 'randperm'
+    if foo:
+        print("-decl: ",decl)
+
     for argument in decl["arguments"]:
         type = fully_qualified_type(argument["type"])
         type = fix_c10_optional(type)
@@ -140,14 +189,8 @@ def process_function(decl, is_tensor_option):
 
         actuals.append(actual)
 
-    if 'dtype' in actuals and 'layout' in actuals and 'device' in actuals and 'pin_memory' in actuals:
-        index = actuals.index('dtype')
-        actuals.remove('dtype')
-        actuals.remove('layout')
-        actuals.remove('pin_memory')
-        actuals.remove('device')
-
-        actuals.insert(index, 'options')
+    formals = collapseFormalsTO(formals)
+    actuals = collapseActualsTO(actuals)
 
     requires_grad = "options.requires_grad()" if is_tensor_option else "false"
     if decl['name'].endswith('_like') and not is_tensor_option:
@@ -156,10 +199,14 @@ def process_function(decl, is_tensor_option):
 
     pre_record_trace, post_record_trace = format_trace(decl)
 
-    if is_tensor_option:
-        return FUNCTION_TEMPLATE_TO.substitute(
-            name=decl["name"], formals=formals, actuals=actuals, requires_grad=requires_grad,
-            pre_record_trace=pre_record_trace, post_record_trace=post_record_trace)
+    if foo:
+        print("-pre_record_trace: ",pre_record_trace)
+        print("-post_record_trace: ",post_record_trace)
+
+    #if is_tensor_option:
+    #    return FUNCTION_TEMPLATE_TO.substitute(
+    #        name=decl["name"], formals=formals, actuals=actuals, requires_grad=requires_grad,
+    #        pre_record_trace=pre_record_trace, post_record_trace=post_record_trace)
 
     return FUNCTION_TEMPLATE.substitute(
         name=decl["name"], formals=formals, actuals=actuals, requires_grad=requires_grad,

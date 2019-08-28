@@ -353,6 +353,43 @@ def format_trace_op_name(declaration):
 
     return SELECT.substitute(select_params)
 
+def collapseTraceTO(args):
+    a = any(arg['type'] == 'c10::optional<at::ScalarType>' for arg in args) and any(arg['type'] == 'c10::optional<at::Layout>' for arg in args) and any(arg['type'] == 'c10::optional<at::Device>' for arg in args) and any(arg['type'] == 'c10::optional<bool>' for arg in args)
+    b = any(arg['type'] == 'at::ScalarType' for arg in args) and any(arg['type'] == 'at::Layout' for arg in args) and any(arg['type'] == 'at::Device' for arg in args) and any(arg['type'] == 'bool' for arg in args)
+    if a or b:
+        index = 0
+        for i in range(len(args)):
+            if args[i]['type'] == 'c10::optional<at::ScalarType>' or args[i]['type'] == 'at::ScalarType':
+                break
+            index += 1
+
+        args.insert(index + 4, {"annotation" : "None", "default": "{}", "dynamic_type": "TensorOptions", "is_nullable": "False", "kwarg_only": "True", "name": "options", "type": "const TensorOptions &", "simple_type": "TensorOptions"})
+        args.pop(index + 3)
+        args.pop(index + 2)
+        args.pop(index + 1)
+        args.pop(index)
+
+    return args
+
+def collapseTO2(args):
+    a = 'ScalarType dtype' in args and 'Layout layout' in args and 'Device device' in args and 'bool pin_memory' in args
+    b = 'at::ScalarType dtype' in args and 'at::Layout layout' in args and 'at::Device device' in args and 'bool pin_memory' in args
+
+    index = -1
+    if a:
+        index = args.index('ScalarType dtype')
+
+    if b:
+        index = args.index('at::ScalarType dtype')
+
+    if a or b:
+        args.pop(index + 3)
+        args.pop(index + 2)
+        args.pop(index + 1)
+        args.pop(index)
+
+        args.insert(index, 'const TensorOptions & options')
+    return args
 
 def format_trace_inputs(declaration):
     def dispatch_trace_input(arg_spec):
@@ -395,8 +432,19 @@ def format_trace_inputs(declaration):
         trace_inputs += SELECT.substitute(
             cond='tracer_state->force_outplace', true=outplace, false=inplace)
 
-    return trace_inputs
+    return collapseTraseTO(trace_inputs)
 
+
+def collapseTraseTO(trace):
+    TO1 = 'jit::tracer::addInputs(node, "dtype", dtype);\
+\njit::tracer::addInputs(node, "layout", layout);\
+\njit::tracer::addInputs(node, "device", device);\
+\njit::tracer::addInputs(node, "pin_memory", pin_memory);'
+
+    if TO1 in trace:
+        return trace.replace(TO1, 'jit::tracer::addInputs(node, \"options\", options);')
+
+    return trace
 
 def format_prerecord_trace(declaration):
     local = {}
@@ -506,8 +554,16 @@ def gen_variable_type_shard(out, aten_declarations, template_path, suffix, heade
         for arg in declaration['arguments']:
             arg['type'] = fix_c10_type(arg['type'])
 
-        for i, s in enumerate(declaration['type_method_formals']):
-            declaration['type_method_formals'][i] = fix_c10_type2(s)
+        foo = declaration['name'] == '_sparse_coo_tensor_with_dims'
+
+        #if foo:
+        #    print("BEFORE::: ", declaration['type_method_formals'])
+            #print("AFTER::: ", collapseTO(declaration['type_method_formals']))
+
+        #for i, s in enumerate(declaration['type_method_formals']):
+        #    declaration['type_method_formals'][i] = fix_c10_type2(s)
+
+        declaration['type_method_formals'] = collapseTO2(declaration['type_method_formals'])
 
         for i, s in enumerate(declaration['formals']):
             declaration['formals'][i] = fix_c10_type2(s)
@@ -532,8 +588,26 @@ def gen_variable_type_shard(out, aten_declarations, template_path, suffix, heade
         write(out, 'VariableType%s.cpp' % suffix, VARIABLE_TYPE_CPP, env)
 
 
+def collapseTO(args):
+    a = any(arg['type'] == 'c10::optional<at::ScalarType>' for arg in args) and any(arg['type'] == 'c10::optional<at::Layout>' for arg in args) and any(arg['type'] == 'c10::optional<at::Device>' for arg in args) and any(arg['type'] == 'c10::optional<bool>' for arg in args)
+    b = any(arg['type'] == 'at::ScalarType' for arg in args) and any(arg['type'] == 'at::Layout' for arg in args) and any(arg['type'] == 'at::Device' for arg in args) and any(arg['type'] == 'bool' for arg in args)
+    if a or b:
+        index = 0
+        for i in range(len(args)):
+            if args[i]['type'] == 'c10::optional<at::ScalarType>' or args[i]['type'] == 'at::ScalarType':
+                break
+            index += 1
+
+        args.insert(index + 4, {"annotation" : "None", "default": "{}", "dynamic_type": "TensorOptions", "is_nullable": "False", "kwarg_only": "True", "name": "options", "type": "const TensorOptions &", "simple_type": "TensorOptions"})
+        args.pop(index + 3)
+        args.pop(index + 2)
+        args.pop(index + 1)
+        args.pop(index)
+    return args
+
 def emit_body(declaration):
     strategy = dispatch_strategy(declaration)
+    foo = declaration['name'] == '_sparse_coo_tensor_with_dims'
 
     arguments = declaration['arguments']
 
@@ -570,8 +644,15 @@ def emit_body(declaration):
 
     inputs = [arg for arg in arguments if not arg.get('output', False)]
 
+    if foo:
+        print("--> inputs1: ", inputs)
+
     for zz in inputs:
         zz['type'] = fix_c10_type(zz['type'])
+
+    inputs = collapseTO(inputs)
+    if foo:
+        print("--> inputs2: ", inputs)
 
     differentiable_inputs = list(filter(is_differentiable, inputs))
 

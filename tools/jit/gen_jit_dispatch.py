@@ -271,22 +271,12 @@ def gen_jit_dispatch(declarations, out, template_path):
         return None
 
     def get_invocation(decl, args, num_inputs):
-        foo = decl['name'] == 'empty_like' or decl['name'] == 'hann_window'
-        if foo:
-            print("\n BOO BOO BOO")
-            print("decl: ", decl)
-            print("args: ", args)
-
         # because the arg list can get lengthy we put them on a separate line
         def pack_arguments(args):
             return ',\n'.join(args)
 
         is_namespace_function = 'namespace' in decl['method_of']
         tensor_options_arg_index = getTOIndes(decl)
-
-        if foo:
-            print('is_namespace_function: ', is_namespace_function)
-            print('tensor_options_arg_index: ', tensor_options_arg_index)
 
         if tensor_options_arg_index is not None:
             dtype = args[tensor_options_arg_index]
@@ -296,22 +286,18 @@ def gen_jit_dispatch(declarations, out, template_path):
             args_with_tensor_options = args[:tensor_options_arg_index] + \
                 ['options'] + args[(tensor_options_arg_index + 4):]
 
-            if foo:
-                print('dtype: ', dtype)
-                print('layout: ', layout)
-                print('device: ', device)
-                print('layout: ', layout)
-                print('pin_memory: ', pin_memory)
-                print('args_with_tensor_options: ', args_with_tensor_options)
-
             if is_namespace_function:
+                return CALL_NAMESPACE_WITH_TENSOR_OPTIONS.substitute(
+                    name=decl['name'], dtype=dtype, layout=layout,
+                    device=device, pin_memory=pin_memory,
+                    args_with_tensor_options=pack_arguments(args_with_tensor_options))
                 #args_with_tensor_options = args[:tensor_options_arg_index] + decl['name'] + ", dtype, layout, device, pin_memory" + args[(tensor_options_arg_index + 4):]
                 #print("--> ", args_with_tensor_options)
                 #args_with_tensor_options = args[:tensor_options_arg_index] + \
                 #    [decl['name']] + [', dtype, layout, device, pin_memory'] + args[(tensor_options_arg_index + 4):]
 
-                return CALL_NAMESPACE_WITH_TENSOR_OPTIONS2.substitute(
-                    name=decl['name'], args_with_tensor_options=pack_arguments(args))
+                #return CALL_NAMESPACE_WITH_TENSOR_OPTIONS2.substitute(
+                #    name=decl['name'], args_with_tensor_options=pack_arguments(args))
             else:
                 return CALL_METHOD_WITH_TENSOR_OPTIONS.substitute(
                     name=decl['name'], dtype=dtype, layout=layout,

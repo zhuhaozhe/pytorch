@@ -566,6 +566,10 @@ def create_python_bindings(python_functions, has_self, is_module=False):
         return PY_VARIABLE_CASE.substitute(i=i, cond=cond, call_dispatch=body)
 
     def get_python_binding_arguments(declaration):
+        foo = declaration['name'] == '_cudnn_init_dropout_state'
+        if foo:
+            print("rock n roll!")
+
         python_binding_arguments = []
         has_tensor_input_arg = False
         has_type_input_arg = False
@@ -594,6 +598,15 @@ def create_python_bindings(python_functions, has_self, is_module=False):
         is_like_function_with_options = is_like_function and has_options_arg
         is_factory_function = has_tensor_return and not has_tensor_input_arg
         is_factory_or_like_function = has_tensor_return and (not has_tensor_input_arg or is_like_function)
+
+        if foo:
+            print("has_tensor_input_arg: ", has_tensor_input_arg)
+            print("has_type_input_arg: ", has_type_input_arg)
+            print("has_options_arg: ", has_options_arg)
+            print("is_like_function: ", is_like_function)
+            print("is_like_function_with_options: ", is_like_function_with_options)
+            print("is_factory_function: ", is_factory_function)
+            print("is_factory_or_like_function: ", is_factory_or_like_function)
 
         if (is_factory_function and not has_type_input_arg) or has_options_arg:
             default_type = get_type_default(declaration)
