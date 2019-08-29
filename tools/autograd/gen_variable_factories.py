@@ -70,7 +70,8 @@ def gen_variable_factories(out, declarations, template_path):
         a1 = any(arg['type'] == 'c10::optional<at::ScalarType>' for arg in decl['arguments']) and any(arg['type'] == 'c10::optional<at::Layout>' for arg in decl['arguments']) and any(arg['type'] == 'c10::optional<at::Device>' for arg in decl['arguments']) and any(arg['type'] == 'c10::optional<bool>' for arg in decl['arguments'])
         b = any(arg['type'] == 'ScalarType' for arg in decl['arguments']) and any(arg['type'] == 'Layout' for arg in decl['arguments']) and any(arg['type'] == 'Device' for arg in decl['arguments']) and any(arg['type'] == 'bool' for arg in decl['arguments'])
         b1 = any(arg['type'] == 'at::ScalarType' for arg in decl['arguments']) and any(arg['type'] == 'at::Layout' for arg in decl['arguments']) and any(arg['type'] == 'at::Device' for arg in decl['arguments']) and any(arg['type'] == 'bool' for arg in decl['arguments'])
-        is_tensor_option = a or b or a1 or b1
+        c1 = any(arg['type'] == 'const TensorOptions &' for arg in decl['arguments'])
+        is_tensor_option = a or b or a1 or b1 or c1
 
         #is_tensor_option = any(arg['type'] == 'c10::optional<ScalarType>' for arg in decl['arguments']) and any(arg['type'] == 'c10::optional<Layout>' for arg in decl['arguments']) and any(arg['type'] == 'c10::optional<Device>' for arg in decl['arguments']) and any(arg['type'] == 'c10::optional<bool>' for arg in decl['arguments'])
         is_namespace_fn = 'namespace' in decl['method_of']
@@ -167,9 +168,6 @@ def collapseActualsTO(actuals):
 def process_function(decl, is_tensor_option):
     formals = []
     actuals = []
-    foo = decl['name'] == 'randperm'
-    if foo:
-        print("-decl: ",decl)
 
     for argument in decl["arguments"]:
         type = fully_qualified_type(argument["type"])
@@ -198,10 +196,6 @@ def process_function(decl, is_tensor_option):
         actuals.append('{}.options().is_variable(false)'.format(actuals[0]))
 
     pre_record_trace, post_record_trace = format_trace(decl)
-
-    if foo:
-        print("-pre_record_trace: ",pre_record_trace)
-        print("-post_record_trace: ",post_record_trace)
 
     #if is_tensor_option:
     #    return FUNCTION_TEMPLATE_TO.substitute(

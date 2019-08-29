@@ -374,6 +374,7 @@ def collapseTraceTO(args):
 def collapseTO2(args):
     a = 'ScalarType dtype' in args and 'Layout layout' in args and 'Device device' in args and 'bool pin_memory' in args
     b = 'at::ScalarType dtype' in args and 'at::Layout layout' in args and 'at::Device device' in args and 'bool pin_memory' in args
+    c = 'c10::optional<ScalarType> dtype' in args and 'c10::optional<Layout> layout' in args and 'c10::optional<Device> device' in args and 'c10::optional<bool> pin_memory' in args
 
     index = -1
     if a:
@@ -382,7 +383,10 @@ def collapseTO2(args):
     if b:
         index = args.index('at::ScalarType dtype')
 
-    if a or b:
+    if c:
+        index = args.index('c10::optional<ScalarType> dtype')
+
+    if a or b or c:
         args.pop(index + 3)
         args.pop(index + 2)
         args.pop(index + 1)
@@ -467,7 +471,6 @@ def format_trace(declaration):
         return ('', '')
     return (format_prerecord_trace(declaration), format_postrecord_trace(declaration))
 
-
 def gen_variable_type(out, aten_declarations, template_path):
     """VariableType.h and VariableType.cpp body
 
@@ -539,6 +542,10 @@ def fix_c10_type2(type):
 
     return type
 
+def collapseArgs(args):
+
+    return args
+
 def gen_variable_type_shard(out, aten_declarations, template_path, suffix, header):
     VARIABLE_TYPE_H = CodeTemplate.from_file(template_path + '/VariableType.h')
     VARIABLE_TYPE_CPP = CodeTemplate.from_file(template_path + '/VariableType.cpp')
@@ -550,23 +557,17 @@ def gen_variable_type_shard(out, aten_declarations, template_path, suffix, heade
     for declaration in aten_declarations:
         formal_types = [fix_c10_type(arg['type']) for arg in declaration['arguments']]
 
-
         for arg in declaration['arguments']:
             arg['type'] = fix_c10_type(arg['type'])
+            arg['type'] = fix_c10_type2(arg['type'])
 
-        foo = declaration['name'] == '_sparse_coo_tensor_with_dims'
-
-        #if foo:
-        #    print("BEFORE::: ", declaration['type_method_formals'])
-            #print("AFTER::: ", collapseTO(declaration['type_method_formals']))
-
-        #for i, s in enumerate(declaration['type_method_formals']):
-        #    declaration['type_method_formals'][i] = fix_c10_type2(s)
 
         declaration['type_method_formals'] = collapseTO2(declaration['type_method_formals'])
 
         for i, s in enumerate(declaration['formals']):
             declaration['formals'][i] = fix_c10_type2(s)
+
+        declaration['arguments'] = collapseTraceTO(declaration['arguments'])
 
         type_declarations.append(METHOD_DECLARATION.substitute(declaration))
         if declaration['name'] not in MANUAL_IMPLEMENTATIONS:
@@ -607,10 +608,7 @@ def collapseTO(args):
 
 def emit_body(declaration):
     strategy = dispatch_strategy(declaration)
-    foo = declaration['name'] == '_sparse_coo_tensor_with_dims'
-
     arguments = declaration['arguments']
-
     returns = declaration['returns']
     func = declaration['derivative']
     name = declaration['name']
@@ -644,15 +642,10 @@ def emit_body(declaration):
 
     inputs = [arg for arg in arguments if not arg.get('output', False)]
 
-    if foo:
-        print("--> inputs1: ", inputs)
-
     for zz in inputs:
         zz['type'] = fix_c10_type(zz['type'])
 
     inputs = collapseTO(inputs)
-    if foo:
-        print("--> inputs2: ", inputs)
 
     differentiable_inputs = list(filter(is_differentiable, inputs))
 
@@ -923,7 +916,7 @@ def emit_body(declaration):
                     combined, unpacked_method_args=unpacked_method_args)
 
             if (is_tensor_option):
-                base_type_call = base_type_call.replace('dtype, layout, device, pin_memory', 'at::TensorOptions().device(device).dtype(dtype).layout(layout).pinned_memory(pin_memory)')
+                base_type_call = base_type_call.replace('dtype, layout, device, pin_memory', 'options')
 
             if not modifies_arguments and not returns_void:
                 rhs_value, extra_wrapping_stmts = wrap_output('tmp')
@@ -942,7 +935,7 @@ def emit_body(declaration):
                     declaration['type_method_args'].remove('layout')
                     declaration['type_method_args'].remove('pin_memory')
                     declaration['type_method_args'].remove('device')
-                    declaration['type_method_args'].insert(index, 'at::TensorOptions().device(device).dtype(dtype).layout(layout).pinned_memory(pin_memory)')
+                    declaration['type_method_args'].insert(index, 'options')
 
             call = CALL_DEFAULT.substitute(declaration)
             if not modifies_arguments and not returns_void:
@@ -1035,9 +1028,8 @@ def emit_body(declaration):
     a1 = any(arg['type'] == 'c10::optional<at::ScalarType>' for arg in decl['arguments']) and any(arg['type'] == 'c10::optional<at::Layout>' for arg in decl['arguments']) and any(arg['type'] == 'c10::optional<at::Device>' for arg in decl['arguments']) and any(arg['type'] == 'c10::optional<bool>' for arg in decl['arguments'])
     b = any(arg['type'] == 'ScalarType' for arg in decl['arguments']) and any(arg['type'] == 'Layout' for arg in decl['arguments']) and any(arg['type'] == 'Device' for arg in decl['arguments']) and any(arg['type'] == 'bool' for arg in decl['arguments'])
     b1 = any(arg['type'] == 'at::ScalarType' for arg in decl['arguments']) and any(arg['type'] == 'at::Layout' for arg in decl['arguments']) and any(arg['type'] == 'at::Device' for arg in decl['arguments']) and any(arg['type'] == 'bool' for arg in decl['arguments'])
-    is_tensor_option = a or b or a1 or b1
-
-
+    c1 = any(arg['type'] == 'const TensorOptions &' for arg in decl['arguments'])
+    is_tensor_option = a or b or a1 or b1 or c1
 
     body.append(pre_record_trace)
     body.append(emit_call(env, is_tensor_option))
@@ -1065,13 +1057,7 @@ def unpack_args(env, declaration):
     unpacked_args_simple_type = {}
     for i, arg in enumerate(declaration['arguments']):
 
-        #if declaration['name'] == 'bartlett_window':
-        #    print("\n before unpuck")
-
         if not requires_unpack(arg):
-        #    if declaration['name'] == 'bartlett_window':
-        #        print("\n UNPACKING!")
-
             unpacked_args.append(arg['name'])
             unpacked_args_simple_type[arg['name']] = arg['simple_type']
             continue

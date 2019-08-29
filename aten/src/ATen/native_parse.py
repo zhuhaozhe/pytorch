@@ -267,9 +267,6 @@ def parse_arguments(args, func_variants, declaration, func_return, collapseTenso
     def is_tensor_option(argument):
         return argument['name'] in ['dtype', 'layout', 'device', 'pin_memory']
 
-    #print("\n ----> arguments BEFORE ", arguments)
-    #print("\n ----> corresponding_topts ", corresponding_topts)
-
     if (collapseTensorOptions):
         new_arguments = []
         idx = 0
