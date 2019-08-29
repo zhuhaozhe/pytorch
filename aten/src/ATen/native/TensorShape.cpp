@@ -857,9 +857,7 @@ Tensor flatten(const Tensor& self, int64_t start_dim, int64_t end_dim) {
   std::vector<int64_t> shape;
 
   if (self.dim() == 0) {
-    shape.reserve(1);
-    shape.push_back(1);
-    return self.reshape(shape);
+    return self.reshape({1});
   }
 
   if (start_dim == end_dim) {
