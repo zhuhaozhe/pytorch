@@ -21,25 +21,6 @@ inline at::Tensor ${name}(${formals}) {
 }
 """)
 
-FUNCTION_TEMPLATE_TO = CodeTemplate("""\
-inline at::Tensor ${name}(${formals}) {
-  ${pre_record_trace}
-
-  auto options = at::TensorOptions().device(device).dtype(dtype).layout(layout).pinned_memory(pin_memory);
-
-
-  at::Tensor tensor = ([&]() {
-    at::AutoNonVariableTypeMode non_var_type_mode(true);
-    return at::${name}(${actuals});
-  })();
-
-  at::Tensor result =
-    autograd::make_variable(std::move(tensor), /*requires_grad=*/${requires_grad});
-  ${post_record_trace}
-  return result;
-}
-""")
-
 
 TYPE_PATTERN = re.compile(r"(?:const\s+)?([A-Z]\w+)")
 
@@ -169,6 +150,8 @@ def process_function(decl, is_tensor_option):
     formals = []
     actuals = []
 
+    print("\n~", decl['name'], " : ", decl['arguments'])
+
     for argument in decl["arguments"]:
         type = fully_qualified_type(argument["type"])
         type = fix_c10_optional(type)
@@ -188,19 +171,16 @@ def process_function(decl, is_tensor_option):
         actuals.append(actual)
 
     formals = collapseFormalsTO(formals)
-    actuals = collapseActualsTO(actuals)
+    actuals = collapseActualsTO(actuals) # <-- can be removed?
 
     requires_grad = "options.requires_grad()" if is_tensor_option else "false"
     if decl['name'].endswith('_like') and not is_tensor_option:
         # it's a tensor
         actuals.append('{}.options().is_variable(false)'.format(actuals[0]))
+    elif 'options' in actuals:
+        actuals[actuals.index('options')] = 'at::TensorOptions(options).is_variable(false)'
 
     pre_record_trace, post_record_trace = format_trace(decl)
-
-    #if is_tensor_option:
-    #    return FUNCTION_TEMPLATE_TO.substitute(
-    #        name=decl["name"], formals=formals, actuals=actuals, requires_grad=requires_grad,
-    #        pre_record_trace=pre_record_trace, post_record_trace=post_record_trace)
 
     return FUNCTION_TEMPLATE.substitute(
         name=decl["name"], formals=formals, actuals=actuals, requires_grad=requires_grad,

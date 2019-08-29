@@ -333,7 +333,14 @@ def create_python_bindings(python_functions, has_self, is_module=False):
         inputs = [arg for arg in declaration['arguments'] if not is_output(arg)]
         outputs = [arg for arg in declaration['arguments'] if is_output(arg)]
 
-        has_tensor_options = any(arg['simple_type'] == 'TensorOptions' for arg in declaration['arguments'])
+        #has_tensor_options = any(arg['simple_type'] == 'TensorOptions' for arg in declaration['arguments'])
+        a = any(arg['type'] == 'c10::optional<at::ScalarType>' for arg in inputs) and any(arg['type'] == 'c10::optional<at::Layout>' for arg in inputs) and any(arg['type'] == 'c10::optional<at::Device>' for arg in inputs) and any(arg['type'] == 'c10::optional<bool>' for arg in inputs)
+        b = any(arg['type'] == 'ScalarType' for arg in inputs) and any(arg['type'] == 'Layout' for arg in inputs) and any(arg['type'] == 'Device' for arg in inputs) and any(arg['type'] == 'bool' for arg in inputs)
+        has_tensor_options = a or b
+
+        if declaration['name'] == '_cudnn_init_dropout_state' or declaration['name'] == 'full_like':
+            print("--->>> ", inputs)
+            print("--->>> ", has_tensor_options)
 
         def get_type_args(args):
             return [arg for arg in args if arg['simple_type'] == 'Type']
@@ -395,6 +402,27 @@ def create_python_bindings(python_functions, has_self, is_module=False):
                 dispatch_type = 'c10::optional<int32_t>'
             formal = '{} {}'.format(dispatch_type, name)
             return expr, formal
+
+        def fix_c10_type(type):
+            if type == "c10::optional<ScalarType> dtype":
+                return "c10::optional<at::ScalarType> dtype"
+
+            if type == "c10::optional<Layout> layout":
+                return "c10::optional<at::Layout> layout"
+
+            if type == "c10::optional<Device> device":
+                return "c10::optional<at::Device> device"
+
+            if type == "Device device":
+                return "at::Device device"
+
+            if type == "Layout layout":
+                return "at::Layout layout"
+
+            if type == "ScalarType dtype":
+                return "at::ScalarType dtype"
+
+            return type
 
         def append_actuals_formals(actual, formal):
             actuals.append(actual)
@@ -484,12 +512,60 @@ def create_python_bindings(python_functions, has_self, is_module=False):
                 'requires_grad': requires_grad,
                 'pin_memory': pin_memory,
             }))
-            formal_args.append('const TensorOptions & options')
-            actuals.append('options')
+            #formal_args.append('const TensorOptions & options')
+            #actuals.append('options')
+
+        def collapseTO2(args):
+            a = 'ScalarType dtype' in args and 'Layout layout' in args and 'Device device' in args and 'bool pin_memory' in args
+            b = 'at::ScalarType dtype' in args and 'at::Layout layout' in args and 'at::Device device' in args and 'bool pin_memory' in args
+            c = 'c10::optional<ScalarType> dtype' in args and 'c10::optional<Layout> layout' in args and 'c10::optional<Device> device' in args and 'c10::optional<bool> pin_memory' in args
+
+            index = -1
+            if a:
+                index = args.index('ScalarType dtype')
+
+            if b:
+                index = args.index('at::ScalarType dtype')
+
+            if c:
+                index = args.index('c10::optional<ScalarType> dtype')
+
+            if a or b or c:
+                args.pop(index + 3)
+                args.pop(index + 2)
+                args.pop(index + 1)
+                args.pop(index)
+
+                args.insert(index, 'const TensorOptions & options')
+            return args
+
+        def collapseActualsTO(actuals):
+            if 'dtype' in actuals and \
+               'layout' in actuals and \
+               'device' in actuals and \
+               'pin_memory' in actuals:
+               index = actuals.index('dtype')
+               if index != -1:
+                   actuals.pop(index + 3)
+                   actuals.pop(index + 2)
+                   actuals.pop(index + 1)
+                   actuals.pop(index)
+                   actuals.insert(index, 'options')
+
+            return actuals
+
+        if declaration['name'] == '_cudnn_init_dropout_state':
+            print("--->>> actuals1: ", actuals)
+            print("--->>> actuals2: ", collapseActualsTO(actuals))
 
         env['unpack_args'] = []
-        env['formal_args'] = formal_args
-        env['actuals'] = actuals
+        env['formal_args'] = collapseTO2(formal_args)
+        env['actuals'] = collapseActualsTO(actuals)
+
+        if declaration['name'] == '_cudnn_init_dropout_state':
+            print("--->>> actuals3: ", actuals)
+            print("--->>> actuals4: ", collapseActualsTO(actuals))
+
 
         if has_tensor_options:
             env['initialize_cuda'] = 'maybe_initialize_cuda(options);'
@@ -500,6 +576,8 @@ def create_python_bindings(python_functions, has_self, is_module=False):
             env['dispatch_args'] = declaration['call_args']
         else:
             env['dispatch_args'] = [arg['name'] for arg in declaration['arguments']]
+
+        env['dispatch_args'] = collapseActualsTO(env['dispatch_args'])
 
         if 'Tensor' in declaration['method_of']:
             env['dispatch_args'] = [arg for arg in env['dispatch_args'] if arg != 'self']
@@ -532,8 +610,16 @@ def create_python_bindings(python_functions, has_self, is_module=False):
         # variable itself.)
         env['simple_return_type'] = simple_return_type
 
+        if declaration['name'] == '_cudnn_init_dropout_state':
+            print("--->>> simple_return_type: ", simple_return_type)
+            print("--->>> 2: ", env['dispatch_args'])
+            print("--->>> 3: ", env['dispatch_call'])
+
         env = nested_dict(env, nested_dict(base_env, declaration))
         call_dispatch = PY_VARIABLE_CALL_DISPATCH.substitute(env)
+        if declaration['name'] == '_cudnn_init_dropout_state':
+            print("--->>> call_dispatch: ", call_dispatch)
+
         if requires_grad and not has_tensor_options:
             call_dispatch = PY_VARIABLE_SET_REQUIRES_GRAD.substitute(env, call_dispatch=call_dispatch,
                                                                      requires_grad=requires_grad)
@@ -543,6 +629,7 @@ def create_python_bindings(python_functions, has_self, is_module=False):
         else:
             body.append(PY_VARIABLE_WRAP.substitute(env, call_dispatch=call_dispatch))
         py_method_dispatch.append(PY_VARIABLE_DISPATCH.substitute(env))
+
         return body
 
     def emit_dispatch(i, dictionary, base_env):
@@ -566,10 +653,6 @@ def create_python_bindings(python_functions, has_self, is_module=False):
         return PY_VARIABLE_CASE.substitute(i=i, cond=cond, call_dispatch=body)
 
     def get_python_binding_arguments(declaration):
-        foo = declaration['name'] == '_cudnn_init_dropout_state'
-        if foo:
-            print("rock n roll!")
-
         python_binding_arguments = []
         has_tensor_input_arg = False
         has_type_input_arg = False
@@ -598,15 +681,6 @@ def create_python_bindings(python_functions, has_self, is_module=False):
         is_like_function_with_options = is_like_function and has_options_arg
         is_factory_function = has_tensor_return and not has_tensor_input_arg
         is_factory_or_like_function = has_tensor_return and (not has_tensor_input_arg or is_like_function)
-
-        if foo:
-            print("has_tensor_input_arg: ", has_tensor_input_arg)
-            print("has_type_input_arg: ", has_type_input_arg)
-            print("has_options_arg: ", has_options_arg)
-            print("is_like_function: ", is_like_function)
-            print("is_like_function_with_options: ", is_like_function_with_options)
-            print("is_factory_function: ", is_factory_function)
-            print("is_factory_or_like_function: ", is_factory_or_like_function)
 
         if (is_factory_function and not has_type_input_arg) or has_options_arg:
             default_type = get_type_default(declaration)
@@ -960,6 +1034,10 @@ def get_python_signature(declaration, include_out):
                 py_formal_args.append('*')
                 positional = False
             py_formal_args.append(get_py_formal_arg(arg))
+
+    if declaration['name'] == '_cudnn_init_dropout_state':
+        print("YEAH--->>> ", py_formal_args)
+
 
     # Python function signature.
     # This is the string that we give to FunctionParameter, which is

@@ -363,7 +363,19 @@ def collapseTraceTO(args):
                 break
             index += 1
 
-        args.insert(index + 4, {"annotation" : "None", "default": "{}", "dynamic_type": "TensorOptions", "is_nullable": "False", "kwarg_only": "True", "name": "options", "type": "const TensorOptions &", "simple_type": "TensorOptions"})
+        if any(arg['type'] == 'c10::optional<at::ScalarType>' and arg['default'] == 'c10::nullopt' for arg in args) \
+            and any(arg['type'] == 'c10::optional<at::Layout>' and arg['default'] == 'c10::nullopt' for arg in args) \
+            and any(arg['type'] == 'c10::optional<at::Device>' and arg['default'] == 'c10::nullopt' for arg in args) \
+            and any(arg['type'] == 'c10::optional<bool>' and arg['default'] == 'c10::nullopt' for arg in args):
+            args.insert(index + 4, {"annotation" : "None", "default": "{}", "dynamic_type": "TensorOptions", "is_nullable": "False", "kwarg_only": "True", "name": "options", "type": "const TensorOptions &", "simple_type": "TensorOptions"})
+        elif any(arg['type'] == 'c10::optional<at::ScalarType>' and arg['default'] == 'long' for arg in args) \
+            and any(arg['type'] == 'c10::optional<at::Layout>' and arg['default'] == 'c10::nullopt' for arg in args) \
+            and any(arg['type'] == 'c10::optional<at::Device>' and arg['default'] == 'c10::nullopt' for arg in args) \
+            and any(arg['type'] == 'c10::optional<bool>' and arg['default'] == 'c10::nullopt' for arg in args):
+            args.insert(index + 4, {"annotation" : "None", "default": "long", "dynamic_type": "TensorOptions", "is_nullable": "False", "kwarg_only": "True", "name": "options", "type": "const TensorOptions &", "simple_type": "TensorOptions"})
+        else:
+            args.insert(index + 4, {"annotation" : "None", "dynamic_type": "TensorOptions", "is_nullable": "False", "kwarg_only": "True", "name": "options", "type": "const TensorOptions &", "simple_type": "TensorOptions"})
+
         args.pop(index + 3)
         args.pop(index + 2)
         args.pop(index + 1)
@@ -599,7 +611,7 @@ def collapseTO(args):
                 break
             index += 1
 
-        args.insert(index + 4, {"annotation" : "None", "default": "{}", "dynamic_type": "TensorOptions", "is_nullable": "False", "kwarg_only": "True", "name": "options", "type": "const TensorOptions &", "simple_type": "TensorOptions"})
+        args.insert(index + 4, {"annotation" : "None", "dynamic_type": "TensorOptions", "is_nullable": "False", "kwarg_only": "True", "name": "options", "type": "const TensorOptions &", "simple_type": "TensorOptions"})
         args.pop(index + 3)
         args.pop(index + 2)
         args.pop(index + 1)
@@ -1010,6 +1022,10 @@ def emit_body(declaration):
     combined = nested_dict(env, declaration)
 
     body = []
+    foo = declaration['name'] == 'randn_like'
+    if foo:
+        print("\n\n __!!__> ", declaration['arguments'])
+
     if base_name not in DONT_PROFILE:
         input_names = record_function_input_names()
         body.append(
@@ -1052,6 +1068,10 @@ def unpack_args(env, declaration):
     def requires_unpack(arg):
         return 'Tensor' in arg['dynamic_type']
 
+    foo = declaration['name'] == 'randn_like'
+    if foo:
+        print("\n\n _____> ", declaration['arguments'])
+
     body = []
     unpacked_args = []
     unpacked_args_simple_type = {}
@@ -1061,6 +1081,9 @@ def unpack_args(env, declaration):
             unpacked_args.append(arg['name'])
             unpacked_args_simple_type[arg['name']] = arg['simple_type']
             continue
+
+        if foo:
+            print("dynamic_type> ", arg['dynamic_type'])
 
         dynamic_type = arg['dynamic_type']
         if 'TensorOptions' not in dynamic_type:
@@ -1075,7 +1098,6 @@ def unpack_args(env, declaration):
                     suffix=suffix,
                     ref='&' if ref else '',
                 )
-        #        print("\n T-> ", t)
 
             body.append(UNPACK_TENSOR.substitute(
                 arg_name=arg['name'],
