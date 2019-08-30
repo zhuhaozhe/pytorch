@@ -14501,7 +14501,7 @@ a")
                     [out_features, in_features], scale=1, zero_point=0,
                     dtype=torch.qint8)
                 self.register_buffer('_packed_weight',
-                                     torch.ops.quantized.linear_prepack(qweight))
+                                     torch.ops.quantized.linear_prepack(qweight, None))
 
             @torch.jit.export
             def __getstate__(self):
@@ -14513,7 +14513,7 @@ a")
             @torch.jit.export
             def __setstate__(self, state):
                 self._packed_weight.set_(
-                    torch.ops.quantized.linear_prepack(state))
+                    torch.ops.quantized.linear_prepack(state, None))
 
             @property
             def weight(self):
@@ -14521,7 +14521,7 @@ a")
 
             @weight.setter
             def weight(self, w):
-                self._packed_weight = torch.ops.quantized.linear_prepack(w)
+                self._packed_weight = torch.ops.quantized.linear_prepack(w, None)
 
         with torch.jit._disable_emit_hooks():
             x = torch.jit.script(Linear(10, 10))
