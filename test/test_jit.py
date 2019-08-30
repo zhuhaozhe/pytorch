@@ -612,6 +612,22 @@ class TestJit(JitTestCase):
         m_dropout.eval()
         self.assertEqual(dropout(input) + 1, m_dropout(input))
 
+    def test_script_grad_mode(self):
+        @torch.jit.script
+        def test_set_grad_mode_function(x):
+            # type: (Tensor) -> Tuple[Tensor, Tensor]
+            torch.set_grad_enabled(True)
+            y = x * 2
+            torch.set_grad_enabled(False)
+            z = x * 2
+            return y, z
+
+        x = torch.randn(2, 2, requires_grad=True)
+        print(test_set_grad_mode_function.graph)
+        y, z = test_set_grad_mode_function(x)
+        self.assertEqual(y.requires_grad, True)
+        # self.assertEqual(z.requires_grad, False)
+
     def test_script_autograd_grad(self):
         def test_simple_grad(x, y):
             # type: (Tensor, Tensor) -> List[Tensor]
@@ -3772,12 +3788,22 @@ def foo(xyz):
         self.checkScript(f_grad, (y,))
 
     def test_tensor_data(self):
-        x = torch.randn(3, 4)
+        x = torch.randn(3, 4, requires_grad=True)
+        y = torch.randn(4, 5)
 
         def f_data(x):
             return x.data
 
-        self.checkScript(f_data, (x,))
+        scripted_f_data = torch.jit.script(f_data)
+
+        scripted_x = scripted_f_data(x)
+        self.assertEqual(scripted_x, f_data(x))
+        self.assertEqual(scripted_x.requires_grad, False)
+
+        scripted_y = scripted_f_data(y)
+        self.assertEqual(scripted_y, f_data(y))
+        self.assertEqual(scripted_x.requires_grad, False)
+
 
     def test_tensor_dtype(self):
         x_byte = torch.empty(34, 56, 78, dtype=torch.uint8)
