@@ -114,9 +114,9 @@ void ProcessGroupAgent::sync() {
   pg_->barrier()->wait();
 }
 
-std::shared_ptr<FutureMessage> ProcessGroupAgent::send(
-    const std::string& to, Message&& message) {
-
+std::shared_ptr<FutureMessage> ProcessGroupAgent::sendImpl(
+    const std::string& to,
+    Message&& message) {
   auto dstRankIter = nameMap_.find(to);
   TORCH_CHECK(dstRankIter != nameMap_.end(), "Unknown destination worker ", to);
 

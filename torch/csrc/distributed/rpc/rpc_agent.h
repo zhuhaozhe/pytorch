@@ -46,8 +46,7 @@ class RpcAgent {
   //
   // TODO: avoid passing strings all the time, e.g., by using symbols as a
   // faster alternative.
-  virtual std::shared_ptr<FutureMessage> send(
-      const std::string& to, Message&& message) = 0;
+  std::shared_ptr<FutureMessage> send(const std::string& to, Message&& message);
 
   // Retrieves the worker_id for this node.
   virtual int16_t getWorkerId() = 0;
@@ -61,6 +60,12 @@ class RpcAgent {
   virtual void sync() = 0;
 
  protected:
+  // Method that needs to be overridden by all implementations of this
+  // interface. The public send() method is responsible for common
+  // pre-processing shared across all implementations.
+  virtual std::shared_ptr<FutureMessage> sendImpl(
+      const std::string& to,
+      Message&& message) = 0;
   const std::string workerName_;
   const RequestCallback cb_;
 };
