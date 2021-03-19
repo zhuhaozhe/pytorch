@@ -656,12 +656,25 @@ Tensor& mm_cpu_out(const Tensor & self, const Tensor & mat2, Tensor & result) {
   TORCH_CHECK(self.dim() == 2, "self must be a matrix");
   TORCH_CHECK(mat2.dim() == 2, "mat2 must be a matrix");
   native::resize_(result, {self.sizes()[0], mat2.sizes()[1]});
+  #if AT_MKLDNN_ENABLED()
+  if (self.scalar_type() == at::kBFloat16 &&
+      mat2.scalar_type() == at::kBFloat16 &&
+      result.scalar_type() == at::kBFloat16) {
+        return at::native::mkldnn_mm_out(self, mat2, result);
+      }
+#endif 
   return addmm_cpu_out(result, result, self, mat2, 0, 1);
 }
 
 Tensor mm_cpu(const Tensor & self, const Tensor & mat2) {
   TORCH_CHECK(self.dim() == 2, "self must be a matrix");
   TORCH_CHECK(mat2.dim() == 2, "mat2 must be a matrix");
+#if AT_MKLDNN_ENABLED()
+  if (self.scalar_type() == at::kBFloat16 &&
+      mat2.scalar_type() == at::kBFloat16){
+        return at::native::mkldnn_mm(self, mat2);
+      }
+#endif 
   Tensor result = at::empty({self.sizes()[0], mat2.sizes()[1]}, self.options());
   return addmm_cpu_out(result, result, self, mat2, 0, 1);
 }
