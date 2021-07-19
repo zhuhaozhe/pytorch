@@ -3955,8 +3955,14 @@ class TestLinalg(TestCase):
         def check(x, y):
             # Compare with numpy
             res = torch_fn(x, y)
-            ref = torch.from_numpy(np.array(np_fn(x.cpu().numpy(), y.cpu().numpy())))
-            self.assertEqual(res.cpu(), ref)
+            if x.dtype == torch.bfloat16:
+                ref = torch.from_numpy(np.array(np_fn(x.cpu().float().numpy(), y.cpu().float().numpy())))
+            else:
+                ref = torch.from_numpy(np.array(np_fn(x.cpu().numpy(), y.cpu().numpy())))
+            if res.dtype == torch.bfloat16:
+                self.assertEqual(res.cpu(), ref.bfloat16())
+            else:
+                self.assertEqual(res.cpu(), ref)
 
             # Test out variant
             out = torch.empty_like(res)
@@ -3969,19 +3975,20 @@ class TestLinalg(TestCase):
         check(x, y)
 
         # Contiguous
-        x = torch.randn(10, dtype=dtype, device=device)
-        y = torch.randn(10, dtype=dtype, device=device)
+        x = torch.randn(200, dtype=dtype, device=device)
+        y = torch.randn(200, dtype=dtype, device=device)
         check(x, y)
 
         # 0 strided
-        y = torch.randn(1, dtype=dtype, device=device).expand(10)
+        y = torch.randn(1, dtype=dtype, device=device).expand(200)
         check(x, y)
 
         # 2 strided
         check(x[::2], y[::2])
 
-    @dtypes(torch.float, torch.cfloat)
-    @precisionOverride({torch.cfloat: 1e-4, torch.float32: 5e-5})
+    @dtypes(torch.float, torch.cfloat, torch.bfloat16)
+    @dtypesIfCUDA(torch.float, torch.cfloat)
+    @precisionOverride({torch.cfloat: 1e-4, torch.float32: 5e-5, torch.bfloat16: 1e-0})
     def test_dot_vs_numpy(self, device, dtype):
         self._test_dot_vdot_vs_numpy(device, dtype, torch.dot, np.dot)
 
@@ -6048,6 +6055,7 @@ scipy_lobpcg  | {:10.2e}  | {:10.2e}  | {:6} | N/A
         self.assertEqual(c, cpu_result)
 
     @slowTest
+    @precisionOverride({torch.bfloat16: 0.05})
     @onlyOnCPUAndCUDA
     @dtypes(torch.float32, torch.float64, torch.bfloat16, torch.int32, torch.int64, torch.cfloat, torch.cdouble)
     @dtypesIfCUDA(torch.float32, torch.float64, torch.cfloat, torch.cdouble)

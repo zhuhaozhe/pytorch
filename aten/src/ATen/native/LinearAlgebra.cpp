@@ -23,6 +23,10 @@
 #include <limits>
 #include <numeric>
 
+#if AT_MKLDNN_ENABLED()
+#include <ATen/native/mkldnn/Utils.h>
+#include <ATen/native/mkldnn/Matmul.h>
+#endif // AT_MKLDNN_ENABLED
 
 namespace at {
 namespace meta {
@@ -1032,6 +1036,21 @@ static void addmm_impl_cpu_(
   const int64_t ldb = b.strides()[(transpose_b == transpose_c) ? 1 : 0];
   const int64_t ldc = c.strides()[transpose_c ? 0 : 1];
 
+#if AT_MKLDNN_ENABLED()
+  if (mkldnn_bf16_gemm_usable_check(a, b, c)){
+    if (transpose_c){
+      // m1, m2 are swaped
+      mkldnn_matmul(b, a, c, beta.to<float>(), alpha.to<float>());
+    } else {
+      mkldnn_matmul(a, b, c, beta.to<float>(), alpha.to<float>());
+    }
+    if (!c.is_same(result)) {
+      result.copy_(c);
+  }
+    return;
+  }
+#endif // AT_MKLDNN_ENABLED
+
   // Apply BLAS routine
   AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND2(kHalf, kBFloat16,
       result.scalar_type(), "addmm_impl_cpu_",
@@ -1085,6 +1104,13 @@ static void addbmm_impl_(
     }
     return;
   }
+
+#if AT_MKLDNN_ENABLED()
+  if (mkldnn_bf16_gemm_usable_check(batch1, batch2, result)){
+    mkldnn_matmul(batch1, batch2, result, beta.to<float>(), alpha.to<float>());
+    return;
+  }
+#endif // AT_MKLDNN_ENABLED
 
   auto adjusted_beta(beta);
   for (int64_t batch = 0; batch < num_batches; ++batch) {
@@ -1235,6 +1261,13 @@ static inline Tensor& bmm_out_or_baddbmm_(Tensor& self_or_result, const Tensor& 
     return (strides[2] == 1 && strides[1] >= sizes[2])
             || (strides[1] == 1 && strides[2] >= sizes[1]);
   };
+
+#if AT_MKLDNN_ENABLED()
+  if (mkldnn_bf16_gemm_usable_check(batch1, batch2, self_or_result)){
+    mkldnn_matmul(batch1, batch2, self_or_result, beta.to<float>(), alpha.to<float>());
+    return self_or_result;
+  }
+#endif // AT_MKLDNN_ENABLED
 
   if (contraction_size * res_rows * res_cols < 400) {
     if (is_bmm_out) {
