@@ -1,5 +1,4 @@
 #include <torch/csrc/jit/passes/remove_mutation.h>
-#include <torch/csrc/jit/passes/restore_mutation.h>
 
 namespace torch {
 namespace jit {
@@ -225,6 +224,82 @@ bool MutationRemover::RemoveListMutation(Block* block) {
   return changed;
 }
 
+Node* MutationRemover::tryRemoveNode(Node* node) {
+
+  if (mutation_filter_) {
+    const auto& mutation_filter = *mutation_filter_;
+    if (!mutation_filter(node)) {
+      return nullptr;
+    }
+  }
+
+  // TODO: out op variants
+  if (!inplaceOpVariant(node)) {
+    return nullptr;
+  }
+
+  Value* mutated_value = node->inputs().at(0);
+  if (!tryMakeCreationAndMutationAtomic(mutated_value, node) &&
+      !tryMakeUnaliasedIfOutputAndMutationAtomic(mutated_value, node)) {
+    return nullptr;
+  }
+
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  Node* new_node;
+  if (isSpecialMappedOp(node)) {
+    new_node = createSpecialMappedOp(node);
+  } else {
+    auto schema_name = node->schema().name();
+    auto new_schema = schema_name.substr(0, schema_name.size() - 1);
+    new_node = graph_->create(Symbol::fromQualString(new_schema), 1);
+    new_node->copyMetadata(node);
+    new_node->insertBefore(node);
+    for (Value* input : node->inputs()) {
+      new_node->addInput(input);
+    }
+    new_node->output()->setType(node->output()->type());
+
+    // weird case where there is an inplace op and an equivalent functional op
+    // of the same symbol, but they have different schemas
+    if (!new_node->maybeOperator()) {
+      new_node->destroy();
+      return nullptr;
+    }
+  }
+
+  mutated_value->replaceAllUsesAfterNodeWith(node, new_node->output());
+  node->output()->replaceAllUsesWith(new_node->output());
+
+  // We rewrite something like:
+  // x = torch.zeros()
+  // x.add_(1)
+  // x.add_(2)
+  // to:
+  // x = torch.zeros()
+  // x0 = x.add(1)
+  // x0.add_(2)
+  // For the remainder of the function, x0 will have the
+  // same aliasing relationships as the original x.
+  // To avoid rebuilding the entire alias db, we can replace
+  // the memory DAG element of x with x0.
+  getOrCreateAliasDb()->replaceWithNewValue(
+      mutated_value, new_node->output());
+
+  // it is an invariant that all mutable types have an element in the memory
+  // DAG so we must regive x an alias db element. We have already verified
+  // that the mutated value is a fresh alias with a single use.
+  getOrCreateAliasDb()->createValue(mutated_value);
+
+  // We must erase the destroyed node from the AliasDb lists of writes
+  getOrCreateAliasDb()->writeIndex_->erase(node);
+  node->destroy();
+
+  // now that we have removed a mutating op, the write cache is stale
+  // TODO: don't strictly need to reset write cache, evaluate on models
+  getOrCreateAliasDb()->buildWrittenToLocationsIndex();
+  return new_node;
+}
+
 bool MutationRemover::RemoveTensorMutation(Block* block) {
   bool changed = false;
   for (auto it = block->nodes().begin(); it != block->nodes().end();) {
@@ -234,79 +309,7 @@ bool MutationRemover::RemoveTensorMutation(Block* block) {
     for (Block* sub_block : node->blocks()) {
       changed |= RemoveTensorMutation(sub_block);
     }
-
-    if (mutation_filter_) {
-      const auto& mutation_filter = *mutation_filter_;
-      if (!mutation_filter(node)) {
-        continue;
-      }
-    }
-
-    // TODO: out op variants
-    if (!inplaceOpVariant(node)) {
-      continue;
-    }
-
-    Value* mutated_value = node->inputs().at(0);
-    if (!tryMakeCreationAndMutationAtomic(mutated_value, node) &&
-        !tryMakeUnaliasedIfOutputAndMutationAtomic(mutated_value, node)) {
-      continue;
-    }
-
-    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-    Node* new_node;
-    if (isSpecialMappedOp(node)) {
-      new_node = createSpecialMappedOp(node);
-    } else {
-      auto schema_name = node->schema().name();
-      auto new_schema = schema_name.substr(0, schema_name.size() - 1);
-      new_node = graph_->create(Symbol::fromQualString(new_schema), 1);
-      new_node->copyMetadata(node);
-      new_node->insertBefore(node);
-      for (Value* input : node->inputs()) {
-        new_node->addInput(input);
-      }
-      new_node->output()->setType(node->output()->type());
-
-      // weird case where there is an inplace op and an equivalent functional op
-      // of the same symbol, but they have different schemas
-      if (!new_node->maybeOperator()) {
-        new_node->destroy();
-        continue;
-      }
-    }
-
-    changed = true;
-    mutated_value->replaceAllUsesAfterNodeWith(node, new_node->output());
-    node->output()->replaceAllUsesWith(new_node->output());
-
-    // We rewrite something like:
-    // x = torch.zeros()
-    // x.add_(1)
-    // x.add_(2)
-    // to:
-    // x = torch.zeros()
-    // x0 = x.add(1)
-    // x0.add_(2)
-    // For the remainder of the function, x0 will have the
-    // same aliasing relationships as the original x.
-    // To avoid rebuilding the entire alias db, we can replace
-    // the memory DAG element of x with x0.
-    getOrCreateAliasDb()->replaceWithNewValue(
-        mutated_value, new_node->output());
-
-    // it is an invariant that all mutable types have an element in the memory
-    // DAG so we must regive x an alias db element. We have already verified
-    // that the mutated value is a fresh alias with a single use.
-    getOrCreateAliasDb()->createValue(mutated_value);
-
-    // We must erase the destroyed node from the AliasDb lists of writes
-    getOrCreateAliasDb()->writeIndex_->erase(node);
-    node->destroy();
-
-    // now that we have removed a mutating op, the write cache is stale
-    // TODO: don't strictly need to reset write cache, evaluate on models
-    getOrCreateAliasDb()->buildWrittenToLocationsIndex();
+    changed = tryRemoveNode(node) != nullptr;
   }
 
   return changed;
@@ -364,15 +367,6 @@ bool RemoveTensorMutation(
   MutationRemover mr(graph, std::move(mutation_filter));
   return mr.removeTensorMutation();
 }
-
-static const std::unordered_set<Symbol> activation_ops = []() {
-  std::unordered_set<Symbol> target_ops;
-  for (const auto& iter : activation_type_promotion_mapping) {
-    std::string name = std::string(iter.first.toQualString()) + "_";
-    target_ops.insert(Symbol::fromQualString(name));
-  }
-  return target_ops;
-}();
 
 bool InplaceToFunctionalActivation(const std::shared_ptr<Graph>& graph) {
   return RemoveTensorMutation(graph, [](Node* node) {

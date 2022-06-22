@@ -50,6 +50,21 @@ bool FunctionalToInplaceRewriter::CanBeInplace(Node* node) {
   return (input->uses().size() == 1);
 }
 
+Node* FunctionalToInplaceRewriter::tryToInplace(Node* node){
+
+  if (!CanBeInplace(node)) {
+    return nullptr;
+  }
+  Node* inplace_node = node->replaceWithNewSymbol(
+      Symbol::fromQualString(node->schema().name() + "_"));
+  inplace_node->output()->replaceAllUsesWith(node->inputs().at(0));
+  getOrCreateAliasDb()->replaceWithNewValue(
+      node->output(), inplace_node->output());
+
+  node->destroy();
+  return inplace_node;
+}
+
 bool FunctionalToInplaceRewriter::FunctionalToInplace(Block* block) {
   bool changed = false;
   for (auto it = block->nodes().begin(); it != block->nodes().end();) {
@@ -59,19 +74,9 @@ bool FunctionalToInplaceRewriter::FunctionalToInplace(Block* block) {
     for (Block* sub_block : node->blocks()) {
       changed |= FunctionalToInplace(sub_block);
     }
+  
+    changed = tryToInplace(node) != nullptr;
 
-    if (!CanBeInplace(node)) {
-      continue;
-    }
-
-    changed = true;
-    Node* inplace_node = node->replaceWithNewSymbol(
-        Symbol::fromQualString(node->schema().name() + "_"));
-    inplace_node->output()->replaceAllUsesWith(node->inputs().at(0));
-    getOrCreateAliasDb()->replaceWithNewValue(
-        node->output(), inplace_node->output());
-
-    node->destroy();
   }
   return changed;
 }

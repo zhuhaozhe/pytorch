@@ -35,6 +35,7 @@ class FunctionalToInplaceRewriter {
   FunctionalToInplaceRewriter(std::shared_ptr<Graph> graph);
 
   bool FunctionalToInplace(Block* block);
+  Node* tryToInplace(Node* node);
 
  private:
   AliasDb* getOrCreateAliasDb() {

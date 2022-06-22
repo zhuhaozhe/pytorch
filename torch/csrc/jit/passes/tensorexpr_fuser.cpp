@@ -17,6 +17,8 @@
 #include <torch/csrc/jit/passes/remove_redundant_profiles.h>
 #include <torch/csrc/jit/passes/symbolic_shape_runtime_fusion.h>
 #include <torch/csrc/jit/passes/utils/subgraph_utils.h>
+#include <torch/csrc/jit/passes/remove_mutation.h>
+#include <torch/csrc/jit/passes/restore_mutation.h>
 #include <torch/csrc/jit/runtime/custom_operator.h>
 #include <torch/csrc/jit/runtime/graph_executor.h>
 #include <torch/csrc/jit/runtime/operator_options.h>
@@ -416,6 +418,10 @@ class TensorExprFuser {
       bool add_composed_op,
       bool fuse_to_dynamic_shapes)
       : graph_(std::move(graph)),
+        m_remover_(MutationRemover(graph_, [](Node* node) {
+          return activation_ops.count(node->kind()) != 0;
+        })),
+        m_restorer_(FunctionalToInplaceRewriter(graph_)),
         min_group_size_(min_group_size),
         add_composed_op_(add_composed_op),
         fuse_to_dynamic_shapes_(fuse_to_dynamic_shapes) {
@@ -607,13 +613,19 @@ class TensorExprFuser {
     auto inputs = sortReverseTopological(
         fusion_node->inputs(), fusion_node->owningBlock());
     for (auto input : inputs) {
+      Node* node = input->node();
+      Node* maybe_new_node = tryRemoveMution(node);
       debugDumpFusionGroup("Current fusion group: ", fusion_node);
-      GRAPH_DEBUG("Trying to merge: ", *input->node());
-      if (auto maybe_fusion_group = tryMerge(fusion_node, input->node())) {
+      GRAPH_DEBUG("Trying to merge: ", *maybe_new_node);
+      if (auto maybe_fusion_group = tryMerge(fusion_node, maybe_new_node)) {
         // we successfully merged, so the new group's `inputs` may have
         // changed. So rescan the new group for more merging opportunities.
         return std::make_pair(
             maybe_fusion_group.value()->reverseIterator(), true);
+      } else {
+        if (node != maybe_new_node) {
+          tryRestoreMution(maybe_new_node);
+        }
       }
     }
 
@@ -644,18 +656,21 @@ class TensorExprFuser {
 
   std::pair<graph_node_list::iterator, bool> scanNode(Node* n) {
     GRAPH_DEBUG("Considering node:", *n)
-
-    if (!canHandle(n)) {
-      return std::make_pair(++n->reverseIterator(), false);
+    Node* maybe_new_node = tryRemoveMution(n);
+    if (!canHandle(maybe_new_node)) {
+      if (n != maybe_new_node) {
+        maybe_new_node = tryRestoreMution(maybe_new_node);
+      }
+      return std::make_pair(++maybe_new_node->reverseIterator(), false);
     }
     // There are some nodes that we can support, but we don't want to start a
     // fusion group from - skip them.
-    if (n->kind() == prim::ListConstruct || n->kind() == aten::slice ||
-        n->kind() == aten::unsqueeze || n->kind() == prim::ConstantChunk ||
-        n->kind() == prim::Constant || unexecutedEagerOp(n)) {
+    if (maybe_new_node->kind() == prim::ListConstruct || maybe_new_node->kind() == aten::slice ||
+        maybe_new_node->kind() == aten::unsqueeze || maybe_new_node->kind() == prim::ConstantChunk ||
+        maybe_new_node->kind() == prim::Constant || unexecutedEagerOp(maybe_new_node)) {
       return std::make_pair(++n->reverseIterator(), false);
     }
-    return createFusionGroup(n);
+    return createFusionGroup(maybe_new_node);
   }
 
   // Merge fusible nodes into subgraphs in prim::TensorExprGroup nodes.
@@ -1252,6 +1267,28 @@ class TensorExprFuser {
     }
   }
 
+  Node* tryRemoveMution(Node* node) {
+    Node* maybe_new_node = m_remover_.tryRemoveNode(node);
+    if (maybe_new_node == nullptr) {
+      maybe_new_node = node;
+    } else {
+      GRAPH_DEBUG("Create outplace op from inplace version: ", *maybe_new_node);
+      aliasDb_ = torch::make_unique<AliasDb>(graph_);
+    }
+    return maybe_new_node;
+  }
+
+  Node* tryRestoreMution(Node* node) {
+    Node* maybe_new_node = m_restorer_.tryToInplace(node);
+    if (maybe_new_node == nullptr) {
+      maybe_new_node = node;
+    } else {
+      GRAPH_DEBUG("Restore inplace op from outplace version: ", *maybe_new_node);
+      aliasDb_ = torch::make_unique<AliasDb>(graph_);
+    }
+    return maybe_new_node;
+  }
+
   // This function parses the option provided by the environment variable
   // "PYTORCH_TENSOREXPR_DONT_FUSE".
   // This variable allows users to disable fusion on a list of specified
@@ -1276,6 +1313,9 @@ class TensorExprFuser {
 
   std::shared_ptr<Graph> graph_;
   std::unique_ptr<AliasDb> aliasDb_ = nullptr;
+
+  MutationRemover m_remover_;
+  FunctionalToInplaceRewriter m_restorer_;
 
   std::set<NodeKind> operators_not_to_fuse;
   // Minimal size of a fusion group

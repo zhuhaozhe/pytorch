@@ -5,6 +5,7 @@
 #include <torch/csrc/jit/ir/alias_analysis.h>
 #include <torch/csrc/jit/ir/ir.h>
 #include <torch/csrc/utils/memory.h>
+#include <torch/csrc/jit/passes/restore_mutation.h>
 
 namespace torch {
 namespace jit {
@@ -34,6 +35,8 @@ struct TORCH_API MutationRemover {
   bool inplaceOpVariant(Node* n);
 
   static bool hasSideEffectOrAlias(Value* v, AliasDb* aliasDb);
+
+  Node* tryRemoveNode(Node* n);
 
  private:
   Node* createSpecialMappedOp(Node* n);
@@ -77,6 +80,15 @@ TORCH_API bool RemoveTensorMutation(
 // Replaces in-place aten activation ops with their functional equivalence
 TORCH_API bool InplaceToFunctionalActivation(
     const std::shared_ptr<Graph>& graph);
+
+static const std::unordered_set<Symbol> activation_ops = []() {
+  std::unordered_set<Symbol> target_ops;
+  for (const auto& iter : activation_type_promotion_mapping) {
+    std::string name = std::string(iter.first.toQualString()) + "_";
+    target_ops.insert(Symbol::fromQualString(name));
+  }
+  return target_ops;
+}();
 
 } // namespace jit
 } // namespace torch
