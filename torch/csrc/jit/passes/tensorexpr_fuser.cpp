@@ -601,13 +601,14 @@ class TensorExprFuser {
   // We then try to pull inputs into the fusion group and repeat that process
   // until there is nothing we can pull in.
   std::pair<graph_node_list::iterator, bool> createFusionGroup(
-      Node* fusion_node) {
+      Node* fusion_node, bool maybe_restore) {
     // Allow single-node groups containing conv2d, since we'll only select
     // those in cases where the tensorexpr implementation is faster than the
     // aten implementation.
     if (min_group_size_ == 1 || fusion_node->kind() == aten::conv2d) {
       fusion_node = getOrCreateTensorExprSubgraph(fusion_node);
     }
+    Node* maybe_new_fusion_node = fusion_node;
 
     GRAPH_DEBUG("Iteratively pull input nodes into the fusion group...\n");
     auto inputs = sortReverseTopological(
@@ -626,10 +627,13 @@ class TensorExprFuser {
         if (node != maybe_new_node) {
           tryRestoreMution(maybe_new_node);
         }
+        if (maybe_restore) {
+          maybe_new_fusion_node = tryRestoreMution(fusion_node);
+        }
       }
     }
 
-    return std::make_pair(++fusion_node->reverseIterator(), false);
+    return std::make_pair(++maybe_new_fusion_node->reverseIterator(), false);
   }
 
   static void debugDumpFusionGroup(const std::string& msg, Node* n) {
@@ -657,8 +661,9 @@ class TensorExprFuser {
   std::pair<graph_node_list::iterator, bool> scanNode(Node* n) {
     GRAPH_DEBUG("Considering node:", *n)
     Node* maybe_new_node = tryRemoveMution(n);
+    bool maybe_restore = n != maybe_new_node;
     if (!canHandle(maybe_new_node)) {
-      if (n != maybe_new_node) {
+      if (maybe_restore) {
         maybe_new_node = tryRestoreMution(maybe_new_node);
       }
       return std::make_pair(++maybe_new_node->reverseIterator(), false);
@@ -670,7 +675,7 @@ class TensorExprFuser {
         maybe_new_node->kind() == prim::Constant || unexecutedEagerOp(maybe_new_node)) {
       return std::make_pair(++n->reverseIterator(), false);
     }
-    return createFusionGroup(maybe_new_node);
+    return createFusionGroup(maybe_new_node, maybe_restore);
   }
 
   // Merge fusible nodes into subgraphs in prim::TensorExprGroup nodes.
