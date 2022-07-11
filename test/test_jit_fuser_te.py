@@ -1490,6 +1490,13 @@ class TestTEFuser(JitTestCase):
             torch.remainder,
             lambda x, y: y.type_as(x),
         ]
+
+        def inplace_fmod(x, y):
+            return x.fmod_(y)
+
+        def inplace_remainder(x, y):
+            return x.remainder_(y)
+
         inplace_binary_ops = [
             lambda x, y: x.add_(y),
             lambda x, y: x.sub_(y),
@@ -1502,14 +1509,14 @@ class TestTEFuser(JitTestCase):
             lambda x, y: x.gt_(y),
             lambda x, y: x.lt_(y),
             lambda x, y: x.atan2_(y),
-            lambda x, y: x.fmod_(y),
-            lambda x, y: x.remainder_(y),
+            inplace_fmod,
+            inplace_remainder,
         ]
         fp_only = [
             torch.fmod,
             torch.remainder,
-            inplace_binary_ops[-1],
-            inplace_binary_ops[-2],
+            inplace_fmod,
+            inplace_remainder,
         ]
         binary_ops = binary_ops + inplace_binary_ops
         devices = self.devices

@@ -417,7 +417,6 @@ class TensorExprFuser {
       bool add_composed_op,
       bool fuse_to_dynamic_shapes)
       : graph_(std::move(graph)),
-        m_remover_(MutationRemover(graph_)),
         min_group_size_(min_group_size),
         add_composed_op_(add_composed_op),
         fuse_to_dynamic_shapes_(fuse_to_dynamic_shapes) {
@@ -1109,7 +1108,7 @@ class TensorExprFuser {
     }
 
     REQ(tensorexpr::isSupported(node) || isOutplaceSupported(node));
-    REQ(typesAreSupported(node) || typesAreSupportedForOutplace(node));
+    REQ(typesAreSupportedForOutplace(node));
 
     // A hook to optimizations limitter to allow bisecting the pass
     REQ(JIT_OPT_ALLOWED);
@@ -1279,7 +1278,7 @@ class TensorExprFuser {
   bool typesAreSupportedForOutplace(Node* node) {
     auto maybe_outplace_node = MakeOutplaceNode(node);
     if (maybe_outplace_node == node) {
-      return false;
+      return typesAreSupported(node);
     } else {
       bool passed = typesAreSupported(maybe_outplace_node);
       maybe_outplace_node->destroy();
@@ -1311,6 +1310,7 @@ class TensorExprFuser {
   // whether this outplace node can be merged into fusion groups yet. We only do
   // the replacement all checks are passed/
   Node* MakeOutplaceNode(Node* node, bool replacement = false) {
+    auto m_remover_ = MutationRemover(graph_);
     if (!m_remover_.inplaceOpVariant(node)) {
       return node;
     }
@@ -1380,8 +1380,6 @@ class TensorExprFuser {
 
   std::shared_ptr<Graph> graph_;
   std::unique_ptr<AliasDb> aliasDb_ = nullptr;
-
-  MutationRemover m_remover_;
 
   std::set<NodeKind> operators_not_to_fuse;
   // Minimal size of a fusion group
