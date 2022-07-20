@@ -26,7 +26,7 @@ struct WithCPUFuser {
   bool cpuFuserEnabled;
 };
 
-TEST(TEFuserPass, FuserPass_1) {
+TEST(TEFuserPass, FuserPassInplace_1) {
   WithCPUFuser cf;
   const auto graph_string = R"IR(
     graph(%0 : Float(128, strides=[1], device=cpu),
@@ -44,23 +44,20 @@ TEST(TEFuserPass, FuserPass_1) {
   g->lint();
   FuseTensorExprs(g);
 
-  // We should not be able to fuse across the in-place operation here.
-  testing::FileCheck()
-      .check("prim::TensorExprGroup_")
-      ->check("aten::add_")
-      ->check("prim::TensorExprGroup_")
-      ->run(*g);
+  // We should be able to fuse across the in-place operation here since it can
+  // be safely replaced by it's outplace version.
+  testing::FileCheck().check("prim::TensorExprGroup_")->run(*g);
 }
 
-TEST(TEFuserPass, FuserPass_2) {
+TEST(TEFuserPass, FuserPassInplace_2) {
   WithCPUFuser cf;
   const auto graph_string = R"IR(
     graph(%0 : Float(128, strides=[1], device=cpu),
           %1 : Float(128, strides=[1], device=cpu)):
       %12 : int = prim::Constant[value=1]()
-      %a : Float(128, strides=[1], device=cpu) = aten::mul(%0, %1)
+      %a : Float(128, strides=[1], device=cpu) = aten::mul_(%0, %1)
       %b : Float(128, strides=[1], device=cpu) = aten::add(%0, %1, %12)
-      %c : Float(128, strides=[1], device=cpu) = aten::add_(%b, %1, %12)
+      %c : Float(128, strides=[1], device=cpu) = aten::add(%b, %1, %12)
       %d : Float(128, strides=[1], device=cpu) = aten::mul(%c, %a)
       return (%d))IR";
   auto g = std::make_shared<Graph>();
@@ -69,14 +66,40 @@ TEST(TEFuserPass, FuserPass_2) {
   g->lint();
   FuseTensorExprs(g);
 
-  // We should not be able to fuse across the in-place operation here.
+  // We should not be able to fuse the in-place operation here since  it cannot
+  // be replaced by it's outplace version.
   testing::FileCheck()
-      .check("aten::add_")
+      .check("aten::mul_")
       ->check("prim::TensorExprGroup_0")
       ->run(*g);
 }
 
-TEST(TEFuserPass, FuserPass_3) {
+TEST(TEFuserPass, FuserPassInplace_3) {
+  WithCPUFuser cf;
+  const auto graph_string = R"IR(
+    graph(%0 : Float(128, strides=[1], device=cpu),
+          %1 : Float(128, strides=[1], device=cpu)):
+      %2 : int = prim::Constant[value=1]()
+      %3 : Float(128, strides=[1], device=cpu) = aten::add(%0, %1, %2)
+      %4 : Float(128, strides=[1], device=cpu) = aten::sigmoid(%3)
+      %5 : Float(128, strides=[1], device=cpu) = aten::relu_(%3)
+      %6 : Float(128, strides=[1], device=cpu) = aten::mul(%4, %5)
+      return (%6))IR";
+  auto g = std::make_shared<Graph>();
+  torch::jit::parseIR(graph_string, g.get());
+
+  g->lint();
+  FuseTensorExprs(g);
+
+  // We should not be able to fuse across the in-place operation here since it
+  // cannot be replaced by it's outplace version.
+  testing::FileCheck()
+      .check("aten::relu_")
+      ->check("prim::TensorExprGroup_")
+      ->run(*g);
+}
+
+TEST(TEFuserPass, FuserPass_1) {
   WithCPUFuser cf;
   const auto graph_string = R"IR(
     graph(%x : Float(128, strides=[1], device=cpu),
