@@ -515,20 +515,28 @@ class TestTEFuser(JitTestCase):
             def clamp_double(x, eta: float):
                 return 1 - x.clamp(eta, 1 - eta)
 
-            x = torch.tensor([1.0, 1.0], dtype=torch.double, device=device)
-            eta = 1e-9
-            s = self.checkScript(clamp_double, (x, eta), profiling=ProfilingMode.PROFILING, atol=1e-10, rtol=1e-5)
-            self.assertAllFused(s.graph_for(x, eta), except_for={'aten::sub'})
+            def inplace_clamp_double(x, eta: float):
+                return 1 - x.relu().clamp(eta, 1 - eta)
+
+            for fn in [clamp_double, inplace_clamp_double]:
+                x = torch.tensor([1.0, 1.0], dtype=torch.double, device=device)
+                eta = 1e-9
+                s = self.checkScript(fn, (x, eta), profiling=ProfilingMode.PROFILING, atol=1e-10, rtol=1e-5)
+                self.assertAllFused(s.graph_for(x, eta), except_for={'aten::sub'})
 
     def test_clamp_int(self):
         for device in self.devices:
             def clamp_int(x, eta: int):
                 return x.clamp(0, eta)
 
-            x = torch.tensor([1, 1], device=device)
-            eta = 1 << 32
-            s = self.checkScript(clamp_int, (x, eta), profiling=ProfilingMode.PROFILING)
-            self.assertAllFused(s.graph_for(x, eta))
+            def inplace_clamp_int(x, eta: int):
+                return x.relu().clamp_(0, eta)
+
+            for fn in [clamp_int, inplace_clamp_int]:
+                x = torch.tensor([1, 1], device=device)
+                eta = 1 << 32
+                s = self.checkScript(fn, (x, eta), profiling=ProfilingMode.PROFILING)
+                self.assertAllFused(s.graph_for(x, eta))
 
     def test_add_bool(self):
         sizes = [(1,), (2,), (4, 4)]
@@ -1325,30 +1333,37 @@ class TestTEFuser(JitTestCase):
 
     def test_gelu(self):
         def apply(fn):
-            return lambda x, approximate: fn(x, approximate)
+            return lambda x: fn(x)
+
+        def apply_inplace(fn):
+            return lambda x: fn(x.relu())
 
         unary_ops = [
             F.gelu,
         ]
+        inplace_unary_ops = [
+            torch._C._nn.gelu_,
+        ]
+
         sizes = [(1,), (2,), (4, 4)]
         for dtype, op, device, size in product(self.dtypes, unary_ops, self.devices, sizes):
             # TODO: Add back when https://github.com/pytorch/pytorch/issues/55905 is closed
+            is_inplace = op in inplace_unary_ops
             if dtype in [torch.float16, torch.bfloat16] and device == "cpu":
                 continue
             try:
                 x = self.data_for(dtype, device, size=size)
-                cond = self.data_for(torch.bool, device)
-                fn = apply(op)
-                ref = fn(x, cond)
+                fn = apply_inplace(op) if is_inplace else apply(op)
+                ref = fn(x)
             except Exception:
                 # If eager mode doesn't support a dtype/op/device combo,
                 # neither does the fuser.  Catch everything to avoid needing to
                 # guess what errors might be thrown by eager.
                 continue
             try:
-                t = torch.jit.trace(fn, (x, cond))
-                torch.testing.assert_close(ref, t(x, cond))
-                self.assertAllFused(t.graph_for(x, cond))
+                t = torch.jit.trace(fn, (x))
+                torch.testing.assert_close(ref, t(x))
+                self.assertAllFused(t.graph_for(x))
             except Exception as e:
                 raise RuntimeError(
                     " ".join(["Failed:", str(dtype), op.__name__, device, str(size)])
@@ -1358,6 +1373,20 @@ class TestTEFuser(JitTestCase):
         with torch._jit_internal._disable_emit_hooks():
             def apply(fn):
                 return lambda x: fn(x)
+
+            def apply_inplace(fn):
+                return lambda x: fn(x.relu())
+
+            def find_inplace_fn(fn):
+                fn_name = fn.__name__ + '_'
+                if hasattr(torch, fn_name):
+                    return getattr(torch, fn_name)
+                elif hasattr(F, fn_name):
+                    return getattr(F, fn_name)
+                elif hasattr(torch._C._nn, fn_name):
+                    return getattr(torch._C._nn, fn_name)
+                else:
+                    return None
 
             unary_ops = [
                 torch.lgamma,
@@ -1402,9 +1431,19 @@ class TestTEFuser(JitTestCase):
                 # TODO: broken since type promotion was added
                 # lambda x: torch.clamp(x, -10, 10),
             ]
-            gpu_only = {torch.erf, torch.erfc}
+            inplace_unary_ops = [lambda x: torch.threshold_(x, 0, -10)]
+            gpu_only = [torch.erf, torch.erfc]
+            for op in unary_ops:
+                inplace_op = find_inplace_fn(op)
+                if inplace_op is not None:
+                    inplace_unary_ops.append(inplace_op)
+                    if op in gpu_only:
+                        gpu_only.append(inplace_op)
+            unary_ops = unary_ops + inplace_unary_ops
+
             sizes = [(1,), (2,), (4, 4)]
             for dtype, op, device, size in product(self.dtypes, unary_ops, self.devices, sizes):
+                is_inplace = op in inplace_unary_ops
                 # TODO: Add back when https://github.com/pytorch/pytorch/issues/55905 is closed
                 if dtype in [torch.float16, torch.bfloat16] and device == "cpu":
                     continue
@@ -1415,7 +1454,7 @@ class TestTEFuser(JitTestCase):
                     continue
                 try:
                     x = self.data_for(dtype, device, size=size)
-                    fn = apply(op)
+                    fn = apply_inplace(op) if is_inplace else apply(op)
                     ref = fn(x)
                 except Exception:
                     # If eager mode doesn't support a dtype/op/device combo,
@@ -1456,10 +1495,12 @@ class TestTEFuser(JitTestCase):
             torch.remainder,
             lambda x, y: y.type_as(x),
         ]
+
         fp_only = [
             torch.fmod,
             torch.remainder,
         ]
+        binary_ops
         devices = self.devices
         for dtype, op, device in product(self.dtypes, binary_ops, devices):
             if dtype in [torch.float16, torch.bfloat16] and device == "cpu":
@@ -1468,6 +1509,61 @@ class TestTEFuser(JitTestCase):
                 x = self.data_for(dtype, device)
                 y = self.data_for(dtype, device)
                 fn = apply(op)
+                ref = fn(x, y)
+            except Exception:
+                # If eager mode doesn't support a dtype/op/device combo,
+                # neither does the fuser.  Catch everything to avoid needing to
+                # guess what errors might be thrown by eager.
+                continue
+            try:
+                t = torch.jit.trace(fn, (x, y))
+                self.assertEqual(ref, t(x, y))
+                if op not in fp_only or dtype.is_floating_point:
+                    self.assertAllFused(t.graph_for(x, y))
+            except Exception as e:
+                raise RuntimeError(
+                    " ".join(["Failed:", str(dtype), op.__name__, device])
+                )
+
+    def test_inplace_binary_ops(self):
+        def apply_inplace(fn):
+            return lambda x, y: fn(x.relu(), y.relu())
+
+        def inplace_fmod(x, y):
+            return x.fmod_(y)
+
+        def inplace_remainder(x, y):
+            return x.remainder_(y)
+
+        inplace_binary_ops = [
+            lambda x, y: x.add_(y),
+            lambda x, y: x.sub_(y),
+            lambda x, y: x.mul_(y),
+            lambda x, y: x.lerp_(y, 0.5),
+            lambda x, y: x.div_(y),
+            lambda x, y: x.eq_(y),
+            lambda x, y: x.ne_(y),
+            lambda x, y: x.ge_(y),
+            lambda x, y: x.gt_(y),
+            lambda x, y: x.lt_(y),
+            lambda x, y: x.atan2_(y),
+            inplace_fmod,
+            inplace_remainder,
+        ]
+
+        fp_only = [
+            inplace_fmod,
+            inplace_remainder,
+        ]
+
+        devices = self.devices
+        for dtype, op, device in product(self.dtypes, inplace_binary_ops, devices):
+            if dtype in [torch.float16, torch.bfloat16] and device == "cpu":
+                continue
+            try:
+                x = self.data_for(dtype, device)
+                y = self.data_for(dtype, device)
+                fn = apply_inplace(op)
                 ref = fn(x, y)
             except Exception:
                 # If eager mode doesn't support a dtype/op/device combo,
@@ -1600,6 +1696,9 @@ class TestTEFuser(JitTestCase):
             def apply_with_scalar(fn, scalar):
                 return lambda x: fn(x, scalar)
 
+            def apply_inplace_with_scalar(fn, scalar):
+                return lambda x: fn(x.relu(), scalar)
+
             # FIXME: Fails in IR Eval: torch.int64 and_ cpu
             binary_ops = [
                 operator.__and__,
@@ -1614,16 +1713,28 @@ class TestTEFuser(JitTestCase):
                 torch.lt,
                 torch.gt,
             ]
+            inplace_binary_ops = [
+                lambda x, y: x.add_(y),
+                lambda x, y: x.sub_(y),
+                lambda x, y: x.mul_(y),
+                lambda x, y: x.eq_(y),
+                lambda x, y: x.ne_(y),
+                lambda x, y: x.ge_(y),
+                lambda x, y: x.gt_(y),
+                lambda x, y: x.lt_(y),
+            ]
+            binary_ops = binary_ops + inplace_binary_ops
             devices = self.devices
             # Maybe we should split this into separate tests to speed it up by
             # only using  scalar values relevant to particular ops
             scalars = [1.5, 3, 0, -2.0, -1]
             for dtype, op, device, scalar in product(self.dtypes, binary_ops, devices, scalars):
+                is_inplace = op in inplace_binary_ops
                 if dtype in [torch.float16, torch.bfloat16] and device == "cpu":
                     continue
                 try:
                     x = self.data_for(dtype, device)
-                    fn = apply_with_scalar(op, scalar)
+                    fn = apply_inplace_with_scalar(op, scalar) if is_inplace else apply_with_scalar(op, scalar)
                     ref = fn(x)
                 except Exception:
                     # If eager mode doesn't support a dtype/op/device combo,
@@ -1643,21 +1754,31 @@ class TestTEFuser(JitTestCase):
         def apply_with_scalar(fn, scalar):
             return lambda x: fn(x, scalar)
 
+        def apply_inplace_with_scalar(fn, scalar):
+            return lambda x: fn(x.relu(), scalar)
+
         binary_ops = [
             torch.div,
             torch.remainder,
             torch.fmod,
         ]
+        inplace_binary_ops = [
+            lambda x, y: x.div_(y),
+            lambda x, y: x.fmod_(y),
+            lambda x, y: x.remainder_(y),
+        ]
+        binary_ops = binary_ops + inplace_binary_ops
         devices = self.devices
         # Maybe we should split this into separate tests to speed it up by
         # only using  scalar values relevant to particular ops
         scalars = [1.5, 3, -2.0, -1]  # skip 0
         for dtype, op, device, scalar in product(self.dtypes, binary_ops, devices, scalars):
+            is_inplace = op in inplace_binary_ops
             if dtype in [torch.float16, torch.bfloat16] and device == "cpu":
                 continue
             try:
                 x = self.data_for(dtype, device)
-                fn = apply_with_scalar(op, scalar)
+                fn = apply_inplace_with_scalar(op, scalar) if is_inplace else apply_with_scalar(op, scalar)
                 ref = fn(x)
             except Exception:
                 # If eager mode doesn't support a dtype/op/device combo,
@@ -1676,6 +1797,9 @@ class TestTEFuser(JitTestCase):
         def apply_with_scalar(fn, scalar):
             return lambda x: fn(x, scalar)
 
+        def apply_inplace_with_scalar(fn, scalar):
+            return lambda x: fn(x.relu(), scalar)
+
         dtypes = [
             # FIXME: 'pow' fails with dtype=torch.float16/device=cuda/scalar=0
             # torch.float16,
@@ -1686,15 +1810,20 @@ class TestTEFuser(JitTestCase):
         binary_ops = [
             torch.pow,
         ]
+        inplace_binary_ops = [
+            lambda x, y: x.pow_(y),
+        ]
+        binary_ops = binary_ops + inplace_binary_ops
         # Maybe we should split this into separate tests to speed it up by
         # only using  scalar values relevant to particular ops
         scalars = [1.5, 3, 0, -2.0, -1]
         for dtype, op, device, scalar in product(dtypes, binary_ops, self.devices, scalars):
+            is_inplace = op in inplace_binary_ops
             if dtype in [torch.float16, torch.bfloat16] and device == "cpu":
                 continue
             try:
                 x = self.data_for(dtype, device)
-                fn = apply_with_scalar(op, scalar)
+                fn = apply_inplace_with_scalar(op, scalar) if is_inplace else apply_with_scalar(op, scalar)
                 ref = fn(x)
             except Exception:
                 # If eager mode doesn't support a dtype/op/device combo,
@@ -1714,19 +1843,28 @@ class TestTEFuser(JitTestCase):
         def apply(fn):
             return lambda x, y, z: fn(x, y, z)
 
+        def apply_inplace(fn):
+            return lambda x, y, z: fn(x.relu(), y.relu(), z.relu())
+
         ternary_ops = [
             torch.lerp,
             torch.addcmul,
         ]
+        inplace_ternary_ops = [
+            lambda x, y, z: x.lerp_(y, z),
+            lambda x, y, z: x.addcmul_(y, z),
+        ]
+        ternary_ops = ternary_ops + inplace_ternary_ops
         devices = self.devices
         for dtype, op, device in product(self.dtypes, ternary_ops, devices):
+            is_inplace = op in inplace_ternary_ops
             if dtype in [torch.float16, torch.bfloat16] and device == "cpu":
                 continue
             try:
                 x = self.data_for(dtype, device)
                 y = self.data_for(dtype, device)
                 z = self.data_for(dtype, device)
-                fn = apply(op)
+                fn = apply_inplace(op) if is_inplace else apply(op)
                 ref = fn(x, y, z)
             except Exception:
                 # If eager mode doesn't support a dtype/op/device combo,
