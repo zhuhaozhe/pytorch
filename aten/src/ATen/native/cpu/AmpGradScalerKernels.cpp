@@ -11,7 +11,6 @@
 #include <ATen/native/TensorIterator.h>
 #include <ATen/native/cpu/Loops.h>
 #include <ATen/cpu/vec/functional.h>
-
 namespace at::native {
 
 namespace {
@@ -181,7 +180,11 @@ at::Tensor& _amp_update_scale_cpu_kernel(
     // so growth_tracker is incremented before comparing to growth_interval.
     auto successful = (*growth_tracker_ptr) + 1;
     if (successful == growth_interval) {
-      *current_scale_ptr = (*current_scale_ptr) * growth_factor;
+      auto new_scale = static_cast<float>((*current_scale_ptr) * growth_factor);
+      // Do not grow the scale past fp32 bounds to inf.
+      if (std::isfinite(new_scale)) {
+        *current_scale_ptr = new_scale;
+      }
       *growth_tracker_ptr = 0;
     } else {
       *growth_tracker_ptr = successful;
