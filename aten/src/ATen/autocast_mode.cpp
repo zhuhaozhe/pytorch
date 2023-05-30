@@ -162,8 +162,8 @@ at::ScalarType get_autocast_privateuseone_dtype() {
 
 void set_autocast_cpu_dtype(at::ScalarType dtype) {
   TORCH_CHECK(
-      dtype == at::kBFloat16,
-      "Currently, AutocastCPU only support Bfloat16 as the autocast_cpu_dtype");
+      dtype == at::kBFloat16 || dtype == at::kHalf,
+      "Currently, AutocastCPU only support BFloat16 or Half as the autocast_cpu_dtype");
   autocast_cpu_dtype = dtype;
 }
 
@@ -407,6 +407,11 @@ TORCH_LIBRARY_IMPL(aten, AutocastCPU, m) {
   KERNEL_CPU2(conv_transpose2d, input, lower_precision_fp)
   KERNEL_CPU2(conv_transpose3d, input, lower_precision_fp)
   KERNEL_CPU(prelu, lower_precision_fp)
+  // lower precision fallthrough
+  KERNEL_CPU_SP2(softmax, int, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(softmax, Dimname, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(log_softmax, int, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(log_softmax, Dimname, lower_precision_fallthrough, true, false)
 
   // fp32 cast policy
   KERNEL_CPU(avg_pool3d, fp32)

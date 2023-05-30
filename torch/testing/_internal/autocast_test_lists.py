@@ -243,6 +243,9 @@ class AutocastCPUTestLists:
         mat1_bf16 = (torch.randn((n, n), dtype=torch.bfloat16, device=dev),)
         mat2_bf16 = (torch.randn((n, n), dtype=torch.bfloat16, device=dev),)
 
+        pointwise0_fp16 = (torch.randn(n, dtype=torch.float16, device=dev),)
+        pointwise1_fp16 = (torch.randn(n, dtype=torch.float16, device=dev),)
+
         dummy_dimsets = ((n,), (n, n), (n, n, n), (n, n, n, n), (n, n, n, n, n))
 
         dummy_bf16 = [(torch.randn(dimset, dtype=torch.bfloat16, device=dev),)
@@ -352,4 +355,13 @@ class AutocastCPUTestLists:
         self.torch_need_autocast_promote = [
             ("cat", (pointwise0_bf16 + pointwise1_fp32,)),
             ("stack", (pointwise0_bf16 + pointwise1_fp32,)),
+        ]
+        self.torch_fallthrough_bf16 = [
+            ("softmax", pointwise0_bf16 + (0,)),
+            ("log_softmax", pointwise0_bf16 + (0,)),
+        ]
+        # Should be fallthrough but does not support fp16 yet.
+        self.torch_fallthrough_fp32 = [
+            ("softmax", pointwise0_fp16 + (0,)),
+            ("log_softmax", pointwise0_fp16 + (0,)),
         ]

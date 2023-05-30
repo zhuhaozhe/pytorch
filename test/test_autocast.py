@@ -17,7 +17,7 @@ class TestAutocastCPU(TestCase):
         del self.autocast_lists
         super().tearDown()
 
-    def _run_autocast_outofplace(self, op, args, run_as_type, out_type=None, module=torch, add_kwargs=None):
+    def _run_autocast_outofplace(self, op, args, run_as_type, out_type=None, module=torch, add_kwargs=None, dtype=torch.bfloat16):
         # helper to cast args
         def cast(val, to_type):
             if isinstance(val, torch.Tensor):
@@ -31,7 +31,7 @@ class TestAutocastCPU(TestCase):
             add_kwargs = {}
 
         self.assertFalse(torch.is_autocast_cpu_enabled())
-        with torch.cpu.amp.autocast():
+        with torch.cpu.amp.autocast(dtype=dtype):
             self.assertTrue(torch.is_autocast_cpu_enabled())
             out_type = out_type if out_type is not None else run_as_type
             output = output_method = None
@@ -106,15 +106,35 @@ class TestAutocastCPU(TestCase):
             op, args, maybe_kwargs = self.args_maybe_kwargs(op_with_args)
             self._run_autocast_outofplace(op, args, torch.bfloat16, add_kwargs=maybe_kwargs)
 
+    def test_autocast_torch_fp16(self):
+        for op_with_args in self.autocast_lists.torch_bf16:
+            op, args, maybe_kwargs = self.args_maybe_kwargs(op_with_args)
+            self._run_autocast_outofplace(op, args, torch.float16, add_kwargs=maybe_kwargs, dtype=torch.float16)
+
     def test_autocast_nn_bf16(self):
         for op_with_args in self.autocast_lists.nn_bf16:
             op, args, maybe_kwargs = self.args_maybe_kwargs(op_with_args)
             self._run_autocast_outofplace(op, args, torch.bfloat16, module=torch._C._nn, add_kwargs=maybe_kwargs)
 
+    def test_autocast_nn_fp16(self):
+        for op_with_args in self.autocast_lists.nn_bf16:
+            op, args, maybe_kwargs = self.args_maybe_kwargs(op_with_args)
+            self._run_autocast_outofplace(op, args, torch.float16, module=torch._C._nn, add_kwargs=maybe_kwargs, dtype=torch.float16)
+
     def test_autocast_torch_fp32(self):
         for op_with_args in self.autocast_lists.torch_fp32:
             op, args, maybe_kwargs = self.args_maybe_kwargs(op_with_args)
             self._run_autocast_outofplace(op, args, torch.float32, add_kwargs=maybe_kwargs)
+
+    def test_autocast_torch_fallthrough_fp32(self):
+        for op_with_args in self.autocast_lists.torch_fallthrough_bf16:
+            op, args, maybe_kwargs = self.args_maybe_kwargs(op_with_args)
+            self._run_autocast_outofplace(op, args, torch.bfloat16, add_kwargs=maybe_kwargs)
+
+    def test_autocast_torch_fallthrough_fp32(self):
+        for op_with_args in self.autocast_lists.torch_fallthrough_fp32:
+            op, args, maybe_kwargs = self.args_maybe_kwargs(op_with_args)
+            self._run_autocast_outofplace(op, args, torch.float32, add_kwargs=maybe_kwargs, dtype=torch.float16)
 
     def test_autocast_nn_fp32(self):
         for op_with_args in self.autocast_lists.nn_fp32:

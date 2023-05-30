@@ -311,6 +311,9 @@ enum class CastPolicy : uint8_t {
                           // running the op. Currently, lower_precision_fp is
                           // fp16 for AutocastCUDA, and is defined by user
                           // (default bf16) for AutocastCPU or other device.
+  lower_precision_fallthrough, // for ops that are only support bf16 or fp16
+                               // on CPU, cast inputs whose data type is bf16
+                               // or fp16 to float.
   fp32, // Cast all inputs to at::kFloat before running the op.
   fp32_set_opt_dtype, // Treats functions (like softmax) that
                       //  1. we'd like to run in fp32 and
@@ -474,6 +477,81 @@ struct WrapFunction_<
   }
 };
 
+// Base template for WrapFunctionSP_
+template <
+    CastPolicy policy,
+    bool bf16_support,
+    bool fp16_support,
+    DeviceType device_type,
+    class Redispatch,
+    Redispatch* F,
+    class Ret,
+    class ArgList>
+struct WrapFunctionSP_ {};
+
+// CastPolicy::lower_precision_fp for bf16 and fp16
+template <
+    bool bf16_support,
+    bool fp16_support,
+    class Redispatch,
+    Redispatch* F,
+    class Ret,
+    class... Args>
+struct WrapFunctionSP_<
+    CastPolicy::lower_precision_fp,
+    bf16_support,
+    fp16_support,
+    DeviceType::CPU,
+    Redispatch,
+    F,
+    Ret,
+    guts::typelist::typelist<Args...>> {
+  static Ret call(Args... args) {
+    c10::impl::ExcludeDispatchKeyGuard no_autocast(
+        get_autocast_dispatch_key_from_device_type(DeviceType::CPU));
+    auto to_type = get_autocast_cpu_dtype();
+    // set_type will only be at::kBFloat16 or at::kHalf
+    to_type = to_type == at::kBFloat16 ? (bf16_support ? to_type : at::kFloat)
+                                       : (fp16_support ? to_type : at::kFloat);
+    return (*F)(cached_cast(to_type, args, DeviceType::CPU)...);
+  }
+};
+
+// CastPolicy::lower_precision_fp fallthrough
+template <
+    bool bf16_support,
+    bool fp16_support,
+    class Redispatch,
+    Redispatch* F,
+    class Ret,
+    class... Args>
+struct WrapFunctionSP_<
+    CastPolicy::lower_precision_fallthrough,
+    bf16_support,
+    fp16_support,
+    DeviceType::CPU,
+    Redispatch,
+    F,
+    Ret,
+    guts::typelist::typelist<Args...>> {
+  static Ret call(Args... args) {
+    TORCH_CHECK(
+        bf16_support ^ fp16_support,
+        "operators in lower_precision_fallthrough list",
+        "only support one lower precision data type");
+    c10::impl::ExcludeDispatchKeyGuard no_autocast(
+        get_autocast_dispatch_key_from_device_type(DeviceType::CPU));
+    auto set_type = get_autocast_cpu_dtype();
+    bool fallthrough = (bf16_support && set_type == at::kBFloat16) ||
+        (fp16_support && set_type == at::kHalf);
+    if (fallthrough) {
+      return (*F)(args...);
+    } else {
+      return (*F)(cached_cast(at::kFloat, args, DeviceType::CPU)...);
+    }
+  }
+};
+
 // Wrapper to infer return_type and parameter_types for WrapFunction_ (imitating
 // core/boxing/impl/WrapFunctionIntoFunctor.h)
 template <
@@ -496,6 +574,38 @@ template <
 struct WrapFunction final {
   using type = WrapFunction_<
       policy,
+      device_type,
+      Redispatch,
+      F,
+      typename guts::function_traits<Registered>::return_type,
+      typename guts::function_traits<Registered>::parameter_types>;
+};
+
+// Wrapper to infer return_type and parameter_types for WrapFunctionSP_
+template <
+    CastPolicy policy,
+    bool bf16_support, // Indicate whether bf16 is supported
+    bool fp16_support, // Indicate whether fp16 is supported
+    DeviceType device_type,
+    class Registered, // The signature for which we're registering.  The
+                      // dispatcher's calling code invokes our registered
+                      // functions with arguments matching Registered, so we
+                      // register WrapFunctionSP_::call methods with a matching
+                      // signature to properly field those arguments.
+    // guts::function_traits below extracts return_type and
+    // parameter_types from Registered, which WrapFunctionSP_
+    // templates above use to declare their call methods.
+    class Redispatch, // The signature for the function we're redispatching to.
+                      // In most cases this is the same as Registered, but for
+                      // some ops (for example, ops where we append a dtype)
+                      // it's useful to redispatch to a function with a
+                      // different signature.
+    Redispatch* F> // The actual function we're redispatching to.
+struct WrapFunctionSP final {
+  using type = WrapFunctionSP_<
+      policy,
+      bf16_support,
+      fp16_support,
       device_type,
       Redispatch,
       F,
@@ -541,6 +651,30 @@ copy pasted in from VariableTypeEverything.cpp with appropriate substitutions.
 } // namespace at
 
 #define ADD_NS(RAW_OP) at::RAW_OP
+
+#define KERNEL_SP(DISPATCHKEY, OP, POLICY, BF16, FP16) \
+  m.impl(                                              \
+      TORCH_SELECTIVE_NAME("aten::" #OP),              \
+      &WrapFunctionSP<                                 \
+          CastPolicy::POLICY,                          \
+          BF16,                                        \
+          FP16,                                        \
+          DISPATCHKEY,                                 \
+          decltype(ATEN_FN(OP)),                       \
+          decltype(ATEN_FN(OP)),                       \
+          &ATEN_FN(OP)>::type::call);
+
+#define KERNEL_SP2(DISPATCHKEY, OP, OVERLOAD, POLICY, BF16, FP16) \
+  m.impl(                                                         \
+      TORCH_SELECTIVE_NAME("aten::" #OP "." #OVERLOAD),           \
+      &WrapFunctionSP<                                            \
+          CastPolicy::POLICY,                                     \
+          BF16,                                                   \
+          FP16,                                                   \
+          DISPATCHKEY,                                            \
+          decltype(ATEN_FN2(OP, OVERLOAD)),                       \
+          decltype(ATEN_FN2(OP, OVERLOAD)),                       \
+          &ATEN_FN2(OP, OVERLOAD)>::type::call);
 
 // Common cases where registration signature matches redispatch signature
 // (that's why SIGNATURE is repeated in the WrapFunction instantiation)
@@ -588,6 +722,12 @@ copy pasted in from VariableTypeEverything.cpp with appropriate substitutions.
 
 #define KERNEL_CPU2(OP, OVERLOAD, POLICY) \
   KERNEL2(c10::DeviceType::CPU, OP, OVERLOAD, POLICY)
+
+#define KERNEL_CPU_SP(OP, POLICY, BF16, FP16) \
+  KERNEL_SP(c10::DeviceType::CPU, OP, POLICY, BF16, FP16)
+
+#define KERNEL_CPU_SP2(OP, OVERLOAD, POLICY, BF16, FP16) \
+  KERNEL_SP2(c10::DeviceType::CPU, OP, OVERLOAD, POLICY, BF16, FP16)
 
 #define KERNEL_DIFFERENT_REDISPATCH_SIGNATURE_CPU( \
     REDISPATCH_FUNC,                               \
