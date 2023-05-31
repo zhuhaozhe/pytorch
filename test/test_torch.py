@@ -5364,7 +5364,7 @@ else:
     def test_grad_scaling_unscale(self, device, dtype):
         device0 = "cpu"
         device1 = "cpu"
-        if device == "cuda":
+        if "cuda" in device:
             device0 = "cuda:0"
             device1 = "cuda:1"
         inv_scale = torch.full((1,), 0.25, dtype=torch.float, device=device0)
@@ -5437,7 +5437,7 @@ else:
                 grads[inject_inf][2, 2] = float('inf')
             return grads
 
-        scaler = torch.cuda.amp.GradScaler() if device == "cuda" else torch.cpu.amp.GradScaler()
+        scaler = torch.cuda.amp.GradScaler() if "cuda" in device else torch.cpu.amp.GradScaler()
         dummy_params = [torch.empty_like(g) for g in perfect_storm_grads(-1)]
         dummy_opt = torch.optim.SGD(dummy_params, lr=1.)
 
@@ -5462,7 +5462,7 @@ else:
     @dtypes(torch.float)
     def test_grad_scaling_update_scale(self, device, dtype):
         device0 = "cpu"
-        if device == "cuda":
+        if "cuda" in device:
             device0 = "cuda:0"
         growth = 2.0
         backoff = 0.25
@@ -5489,7 +5489,7 @@ else:
     @onlyNativeDeviceTypes
     @dtypes(torch.float)
     def test_grad_scaling_unscale_sparse(self, device, dtype):
-        scaler = torch.cuda.amp.GradScaler() if device == "cuda" else torch.cpu.amp.GradScaler()
+        scaler = torch.cuda.amp.GradScaler() if "cuda" in device else torch.cpu.amp.GradScaler()
 
         inv_scale = torch.full((1,), 0.25, dtype=dtype, device=device)
         found_inf = torch.empty((1,), dtype=dtype, device=device)
@@ -5548,7 +5548,7 @@ else:
     def test_grad_scaling_state_dict(self, device):
         device0 = "cpu"
         GradScaler = torch.cpu.amp.GradScaler
-        if device == "cuda":
+        if "cuda" in device:
             device0 = "cuda:0"
             GradScaler = torch.cuda.amp.GradScaler
         for lazy_init_scale in True, False:
@@ -5561,7 +5561,7 @@ else:
             if lazy_init_scale:
                 # Dummy scale() call to ensure the scale tensor is lazily initialized.
                 s1.scale(torch.full((1,), 4.0, dtype=torch.float32, device=device0))
-                if device == "cuda":
+                if "cuda" in device:
                     self.assertTrue(isinstance(s1._scale, torch.cuda.FloatTensor))
                 else:
                     self.assertTrue(isinstance(s1._scale, torch.FloatTensor))
@@ -5619,7 +5619,7 @@ else:
             #     self.assertEqual(c, s, atol=0, rtol=0)
             # For functionality, test with a modest initial scale, and an unrealistically-large growth factor
             # so any potential errors with the growth factor handling will be magnified.
-            GradScaler = torch.cuda.amp.GradScaler if device == "cuda" else torch.cpu.amp.GradScaler
+            GradScaler = torch.cuda.amp.GradScaler if "cuda" in device else torch.cpu.amp.GradScaler
             scaler = GradScaler(init_scale=128., growth_factor=2.0, enabled=enabled, growth_interval=1)
 
             _ = run(device, data, mod_control, opt_control, scaler, loss_fn, skip_iter, False)
@@ -5644,7 +5644,7 @@ else:
                 for k in c_state:
                     self.assertEqual(c_state[k], s_state[k], atol=atol, rtol=1e-05, msg=k)
 
-                self.assertEqual(c, s, atol=2e-3, rtol=1e-05)
+                self.assertEqual(c, s, atol=atol, rtol=1e-05)
 
     # Compares no scaling + no autocasting against scaling + autocasting.
     def _grad_scaling_autocast_test(self, *, device="cuda", atol=1e-3, optimizer_ctor=torch.optim.SGD, optimizer_kwargs=None):
@@ -5653,7 +5653,7 @@ else:
         def run(device, data, model, optimizer, scaler, loss_fn, skip_iter, try_scaling_api):
             for i, (input, target) in enumerate(data):
                 optimizer.zero_grad()
-                with torch.autocast(device, enabled=try_scaling_api):
+                with torch.autocast(device, enabled=try_scaling_api, dtype=torch.half):
                     output = model(input)
                     loss = loss_fn(output, target)
                 if try_scaling_api:
@@ -5708,17 +5708,17 @@ else:
 
     # Compare non-fused optimizer vs fused one as the fused one unscales gradients
     # inside its cuda kernel unlike the other.
-    # @skipMeta
-    # @onlyNativeDeviceTypes
-    # def test_grad_scaling_autocast_fused_optimizers(self, device):
-    #     for optimizer_ctor, optimizer_kwargs, separate_unscale in product(
-    #         (torch.optim.Adam, torch.optim.AdamW),
-    #         ({"fused": True, "amsgrad": False}, {"fused": True, "amsgrad": True}),
-    #         (False, True),
-    #     ):
-    #         with self.subTest(optim=optimizer_ctor, kwargs=optimizer_kwargs, separate_unscale=separate_unscale):
-    #             self._grad_scaling_autocast_fused_optimizers(
-    #                 device, optimizer_ctor=optimizer_ctor, optimizer_kwargs=optimizer_kwargs, separate_unscale=separate_unscale)
+    @skipMeta
+    @onlyNativeDeviceTypes
+    def test_grad_scaling_autocast_fused_optimizers(self, device):
+        for optimizer_ctor, optimizer_kwargs, separate_unscale in product(
+            (torch.optim.Adam, torch.optim.AdamW),
+            ({"fused": True, "amsgrad": False}, {"fused": True, "amsgrad": True}),
+            (False, True),
+        ):
+            with self.subTest(optim=optimizer_ctor, kwargs=optimizer_kwargs, separate_unscale=separate_unscale):
+                self._grad_scaling_autocast_fused_optimizers(
+                    device, optimizer_ctor=optimizer_ctor, optimizer_kwargs=optimizer_kwargs, separate_unscale=separate_unscale)
 
     def _grad_scaling_autocast_fused_optimizers(self, device, optimizer_ctor, optimizer_kwargs, separate_unscale):
         (
@@ -5728,12 +5728,12 @@ else:
         kwargs["fused"] = False
         opt_control = optimizer_ctor(mod_control.parameters(), lr=1.0, **kwargs)
 
-        GradScaler = torch.cuda.amp.GradScaler if device == "cuda" else torch.cpu.amp.GradScaler
+        GradScaler = torch.cuda.amp.GradScaler if "cuda" in device else torch.cpu.amp.GradScaler
         scaler = GradScaler(init_scale=128.0)
 
         for input, target in data:
             opt_control.zero_grad()
-            with torch.autocast(device):
+            with torch.autocast(device, dtype=torch.half):
                 output_control = mod_control(input)
                 loss_control = loss_fn(output_control, target)
             scaler.scale(loss_control).backward()
@@ -5741,7 +5741,7 @@ else:
             scaler.update()
 
             opt_scaling.zero_grad()
-            with torch.autocast(device):
+            with torch.autocast(device, dtype=torch.half):
                 output_scaling = mod_scaling(input)
                 loss_scaling = loss_fn(output_scaling, target)
             scaler.scale(loss_scaling).backward()
@@ -5783,12 +5783,12 @@ else:
         model, _, optimizer, _, data, loss_fn, _ = self._create_scaling_case(
             device, optimizer_ctor=optimizer_ctor, optimizer_kwargs=optimizer_kwargs,
         )
-        GradScaler = torch.cuda.amp.GradScaler if device == "cuda" else torch.cpu.amp.GradScaler
+        GradScaler = torch.cuda.amp.GradScaler if "cuda" in device else torch.cpu.amp.GradScaler
         scaler = GradScaler(init_scale=128.0)
 
         for input, target in data:
             optimizer.zero_grad()
-            with torch.autocast(device, enabled=True):
+            with torch.autocast(device, enabled=True, dtype=torch.half):
                 output = model(input)
                 loss = loss_fn(output, target)
             scaler.scale(loss).backward()
@@ -5808,7 +5808,7 @@ else:
     def test_grad_scale_will_not_overflow(self, device):
         model = torch.nn.Linear(5, 1).to(device)
         optimizer = torch.optim.Adam(model.parameters())
-        GradScaler = torch.cuda.amp.GradScaler if device == "cuda" else torch.cpu.amp.GradScaler
+        GradScaler = torch.cuda.amp.GradScaler if "cuda" in device else torch.cpu.amp.GradScaler
         scaler = GradScaler(growth_interval=1, growth_factor=2**4, init_scale=1e38)
         optimizer.zero_grad()
         x = torch.randn(1, 5).to(device)
@@ -5940,7 +5940,7 @@ else:
             mod_control1, mod_scaling1, opt_control1, opt_scaling1 = \
                 self._create_scaling_models_optimizers(device)
 
-            GradScaler = torch.cuda.amp.GradScaler if device == "cuda" else torch.cpu.amp.GradScaler
+            GradScaler = torch.cuda.amp.GradScaler if "cuda" in device else torch.cpu.amp.GradScaler
             scaler = GradScaler(init_scale=128., growth_factor=2.0, enabled=enabled, growth_interval=1)
 
             def run(model0, model1, optimizer0, optimizer1, try_scaling_api):
@@ -5985,7 +5985,7 @@ else:
     @skipMeta
     @onlyNativeDeviceTypes
     def test_grad_scaler_pass_itself(self, device):
-        GradScaler = torch.cuda.amp.GradScaler if device == "cuda" else torch.cpu.amp.GradScaler
+        GradScaler = torch.cuda.amp.GradScaler if "cuda" in device else torch.cpu.amp.GradScaler
         class _PlaceHolderOptimizer(torch.optim.Optimizer):
             tester = self
 
@@ -6012,7 +6012,7 @@ else:
         o2 = Optimizer2(m.parameters())
         scaler = GradScaler(init_scale=2.0)
 
-        with torch.autocast(device):
+        with torch.autocast(device, dtype=torch.half):
             y = m(x)
             loss = y.mean()
         scaler.scale(loss).backward()
