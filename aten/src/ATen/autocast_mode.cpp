@@ -407,11 +407,44 @@ TORCH_LIBRARY_IMPL(aten, AutocastCPU, m) {
   KERNEL_CPU2(conv_transpose2d, input, lower_precision_fp)
   KERNEL_CPU2(conv_transpose3d, input, lower_precision_fp)
   KERNEL_CPU(prelu, lower_precision_fp)
+
   // lower precision fallthrough
   KERNEL_CPU_SP2(softmax, int, lower_precision_fallthrough, true, false)
   KERNEL_CPU_SP2(softmax, Dimname, lower_precision_fallthrough, true, false)
   KERNEL_CPU_SP2(log_softmax, int, lower_precision_fallthrough, true, false)
   KERNEL_CPU_SP2(log_softmax, Dimname, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(addcdiv, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(addcmul, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(topk, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(upsample_linear1d, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(upsample_bilinear2d, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(_upsample_bilinear2d_aa, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(upsample_bicubic2d, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(_upsample_bicubic2d_aa, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(upsample_trilinear3d, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(upsample_nearest1d, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(_upsample_nearest_exact1d, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(upsample_nearest2d, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(_upsample_nearest_exact2d, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(upsample_nearest3d, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP(_upsample_nearest_exact3d, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(upsample_linear1d, vec, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(upsample_bilinear2d, vec, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(
+      _upsample_bilinear2d_aa, vec, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(upsample_trilinear3d, vec, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(upsample_bicubic2d, vec, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(
+      _upsample_bicubic2d_aa, vec, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(upsample_nearest1d, vec, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(
+      _upsample_nearest_exact1d, vec, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(upsample_nearest2d, vec, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(
+      _upsample_nearest_exact2d, vec, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(upsample_nearest3d, vec, lower_precision_fallthrough, true, false)
+  KERNEL_CPU_SP2(
+      _upsample_nearest_exact3d, vec, lower_precision_fallthrough, true, false)
 
   // fp32 cast policy
   KERNEL_CPU(avg_pool3d, fp32)

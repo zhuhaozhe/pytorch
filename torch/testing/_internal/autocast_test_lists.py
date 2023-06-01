@@ -242,6 +242,9 @@ class AutocastCPUTestLists:
         mat0_bf16 = (torch.randn((n, n), dtype=torch.bfloat16, device=dev),)
         mat1_bf16 = (torch.randn((n, n), dtype=torch.bfloat16, device=dev),)
         mat2_bf16 = (torch.randn((n, n), dtype=torch.bfloat16, device=dev),)
+        mat0_fp16 = (torch.randn((n, n), dtype=torch.float16, device=dev),)
+        mat1_fp16 = (torch.randn((n, n), dtype=torch.float16, device=dev),)
+        mat2_fp16 = (torch.randn((n, n), dtype=torch.float16, device=dev),)
 
         pointwise0_fp16 = (torch.randn(n, dtype=torch.float16, device=dev),)
         pointwise1_fp16 = (torch.randn(n, dtype=torch.float16, device=dev),)
@@ -249,6 +252,8 @@ class AutocastCPUTestLists:
         dummy_dimsets = ((n,), (n, n), (n, n, n), (n, n, n, n), (n, n, n, n, n))
 
         dummy_bf16 = [(torch.randn(dimset, dtype=torch.bfloat16, device=dev),)
+                      for dimset in dummy_dimsets]
+        dummy_fp16 = [(torch.randn(dimset, dtype=torch.float16, device=dev),)
                       for dimset in dummy_dimsets]
 
         dimsets = ((n, n, n), (n, n, n, n), (n, n, n, n, n))
@@ -332,6 +337,19 @@ class AutocastCPUTestLists:
             ("triplet_margin_loss", mat0_bf16 + mat1_bf16 + mat2_bf16),
             ("binary_cross_entropy_with_logits", mat0_bf16 + (torch.rand((n, n), device=dev, dtype=torch.bfloat16),)),
         ]
+        self.torch_fp16_fp32 = [
+            ("poisson_nll_loss", mat0_fp16 + mat1_fp16 + (True, False, 1.e-8, torch.nn._reduction.get_enum('mean'))),
+            ("cosine_embedding_loss", (torch.tensor([[1, 2, 3]], device=dev, dtype=torch.float16),
+                                       torch.tensor([[1, 3, 4]], device=dev, dtype=torch.float16),
+                                       torch.tensor([1], device=dev, dtype=torch.int))),
+            ("hinge_embedding_loss", mat0_fp16 + (torch.ones(n, device=dev, dtype=torch.int),)),
+            ("margin_ranking_loss", mat0_fp16 + mat1_fp16 + (torch.ones((n,), device=dev, dtype=torch.float16),)),
+            ("triplet_margin_loss", mat0_fp16 + mat1_fp16 + mat2_fp16),
+            ("binary_cross_entropy_with_logits", mat0_fp16 + (torch.rand((n, n), device=dev, dtype=torch.float16),)),
+            ("softmax", pointwise0_fp16 + (0,)),
+            ("log_softmax", pointwise0_fp16 + (0,)),
+            ("topk", pointwise0_fp16 + (2,))
+        ]
         self.nn_bf16 = [
             ("linear", mat0_fp32 + mat1_fp32, {}),
         ]
@@ -352,16 +370,82 @@ class AutocastCPUTestLists:
             ("multi_margin_loss", mat0_bf16 + (torch.ones((n,), device=dev, dtype=torch.long),)),
             ("huber_loss", mat0_bf16 + mat1_bf16),
         ]
+        self.nn_fp16_fp32 = [
+            ("avg_pool3d", dummy_fp16[3], {"kernel_size": (3, 3, 3), "stride": (1, 1, 1)}),
+            ("binary_cross_entropy", (torch.rand((n, n), device=dev, dtype=torch.float16),) +
+                                     (torch.rand((n, n), device=dev, dtype=torch.float16),)),
+            ("reflection_pad1d", dummy_fp16[2], {"padding": (3, 3)}),
+            ("nll_loss", (torch.rand((n, n), device=dev, dtype=torch.float16),
+                          torch.zeros((n,), device=dev, dtype=torch.long))),
+            ("nll_loss2d", (torch.rand((n, n, n, n), device=dev, dtype=torch.float16),
+                            torch.zeros((n, n, n), device=dev, dtype=torch.long))),
+            ("l1_loss", mat0_fp16 + mat1_fp16),
+            ("smooth_l1_loss", mat0_fp16 + mat1_fp16),
+            ("mse_loss", mat0_fp16 + mat1_fp16),
+            ("multilabel_margin_loss", mat0_fp16 + (torch.ones((n, n), device=dev, dtype=torch.long),)),
+            ("soft_margin_loss", mat0_fp16 + (torch.ones((n, n), device=dev, dtype=torch.long),)),
+            ("multi_margin_loss", mat0_fp16 + (torch.ones((n,), device=dev, dtype=torch.long),)),
+            ("huber_loss", mat0_fp16 + mat1_fp16),
+            ("upsample_nearest1d", dummy_fp16[2], {"output_size": (n)}),
+            ("upsample_nearest2d", dummy_fp16[3], {"output_size": (n, n)}),
+            ("upsample_nearest3d", dummy_fp16[4], {"output_size": (n, n, n)}),
+            (
+                "upsample_linear1d",
+                dummy_fp16[2],
+                {"output_size": (n), "align_corners": False},
+            ),
+            (
+                "upsample_bilinear2d",
+                dummy_fp16[3],
+                {"output_size": (n, n), "align_corners": False},
+            ),
+            (
+                "_upsample_bilinear2d_aa",
+                dummy_fp16[3],
+                {"output_size": (n, n), "align_corners": False},
+            ),
+            (
+                "upsample_trilinear3d",
+                dummy_fp16[4],
+                {"output_size": (n, n, n), "align_corners": False},
+            ),
+        ]
         self.torch_need_autocast_promote = [
             ("cat", (pointwise0_bf16 + pointwise1_fp32,)),
             ("stack", (pointwise0_bf16 + pointwise1_fp32,)),
         ]
+        self.torch_fp16_need_autocast_promote = [
+            ("cat", (pointwise0_fp16 + pointwise1_fp32,)),
+            ("stack", (pointwise0_fp16 + pointwise1_fp32,)),
+        ]
         self.torch_fallthrough_bf16 = [
             ("softmax", pointwise0_bf16 + (0,)),
             ("log_softmax", pointwise0_bf16 + (0,)),
+            ("topk", pointwise0_bf16 + (2,))
         ]
-        # Should be fallthrough but does not support fp16 yet.
-        self.torch_fallthrough_fp32 = [
-            ("softmax", pointwise0_fp16 + (0,)),
-            ("log_softmax", pointwise0_fp16 + (0,)),
+        self.nn_fallthrough_bf16 = [
+            ("adaptive_avg_pool2d", dummy_bf16[2], {"output_size": (4, 4)}),
+            ("upsample_nearest1d", dummy_bf16[2], {"output_size": (n)}),
+            ("upsample_nearest2d", dummy_bf16[3], {"output_size": (n, n)}),
+            ("upsample_nearest3d", dummy_bf16[4], {"output_size": (n, n, n)}),
+            (
+                "upsample_linear1d",
+                dummy_bf16[2],
+                {"output_size": (n), "align_corners": False},
+            ),
+            (
+                "upsample_bilinear2d",
+                dummy_bf16[3],
+                {"output_size": (n, n), "align_corners": False},
+            ),
+            (
+                "_upsample_bilinear2d_aa",
+                dummy_bf16[3],
+                {"output_size": (n, n), "align_corners": False},
+            ),
+            (
+                "upsample_trilinear3d",
+                dummy_bf16[4],
+                {"output_size": (n, n, n), "align_corners": False},
+            ),
         ]
