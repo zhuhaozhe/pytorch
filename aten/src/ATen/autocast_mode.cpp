@@ -409,13 +409,6 @@ TORCH_LIBRARY_IMPL(aten, AutocastCPU, m) {
   KERNEL_CPU(prelu, lower_precision_fp)
 
   // lower precision fallthrough
-  KERNEL_CPU_SP2(softmax, int, lower_precision_fallthrough, true, false)
-  KERNEL_CPU_SP2(softmax, Dimname, lower_precision_fallthrough, true, false)
-  KERNEL_CPU_SP2(log_softmax, int, lower_precision_fallthrough, true, false)
-  KERNEL_CPU_SP2(log_softmax, Dimname, lower_precision_fallthrough, true, false)
-  KERNEL_CPU_SP(addcdiv, lower_precision_fallthrough, true, false)
-  KERNEL_CPU_SP(addcmul, lower_precision_fallthrough, true, false)
-  KERNEL_CPU_SP(topk, lower_precision_fallthrough, true, false)
   KERNEL_CPU_SP(upsample_linear1d, lower_precision_fallthrough, true, false)
   KERNEL_CPU_SP(upsample_bilinear2d, lower_precision_fallthrough, true, false)
   KERNEL_CPU_SP(_upsample_bilinear2d_aa, lower_precision_fallthrough, true, false)
@@ -474,7 +467,6 @@ TORCH_LIBRARY_IMPL(aten, AutocastCPU, m) {
   KERNEL_CPU(orgqr, fp32)
   KERNEL_CPU(ormqr, fp32)
   KERNEL_CPU(pinverse, fp32)
-  KERNEL_CPU(max_pool3d, fp32)
   KERNEL_CPU(max_unpool2d, fp32)
   KERNEL_CPU(max_unpool3d, fp32)
   KERNEL_CPU(adaptive_avg_pool3d, fp32)

@@ -346,9 +346,6 @@ class AutocastCPUTestLists:
             ("margin_ranking_loss", mat0_fp16 + mat1_fp16 + (torch.ones((n,), device=dev, dtype=torch.float16),)),
             ("triplet_margin_loss", mat0_fp16 + mat1_fp16 + mat2_fp16),
             ("binary_cross_entropy_with_logits", mat0_fp16 + (torch.rand((n, n), device=dev, dtype=torch.float16),)),
-            ("softmax", pointwise0_fp16 + (0,)),
-            ("log_softmax", pointwise0_fp16 + (0,)),
-            ("topk", pointwise0_fp16 + (2,))
         ]
         self.nn_bf16 = [
             ("linear", mat0_fp32 + mat1_fp32, {}),
@@ -421,7 +418,14 @@ class AutocastCPUTestLists:
         self.torch_fallthrough_bf16 = [
             ("softmax", pointwise0_bf16 + (0,)),
             ("log_softmax", pointwise0_bf16 + (0,)),
-            ("topk", pointwise0_bf16 + (2,))
+            ("topk", pointwise0_bf16 + (2,)),
+            ("cumsum", pointwise0_bf16 + (0,)),
+        ]
+        self.torch_fallthrough_fp16 = [
+            ("softmax", pointwise0_fp16 + (0,)),
+            ("log_softmax", pointwise0_fp16 + (0,)),
+            ("topk", pointwise0_fp16 + (2,)),
+            ("cumsum", pointwise0_fp16 + (0,)),
         ]
         self.nn_fallthrough_bf16 = [
             ("adaptive_avg_pool2d", dummy_bf16[2], {"output_size": (4, 4)}),
