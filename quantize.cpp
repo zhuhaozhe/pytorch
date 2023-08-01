@@ -84,9 +84,9 @@ at::Tensor quantize_per_tensor(const at::Tensor& t, const at::Tensor& scale_, co
             auto out_ptr = out_ptr0 + offset;            
             auto tmp0 = *in_ptr;
             auto tmp1 = static_cast<float>(tmp0);
-            auto tmp2 = static_cast<float>(0.05);
+            auto tmp2 = static_cast<float>(scale);
             auto tmp3 = tmp1 / tmp2;
-            auto tmp4 = static_cast<float>(1.0);
+            auto tmp4 = static_cast<float>(zp);
             auto tmp5 = tmp3 + tmp4;
             auto tmp6 = std::nearbyint(tmp5);
             auto tmp7 = static_cast<float>(tmp6);
