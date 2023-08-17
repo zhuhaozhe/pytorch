@@ -1,0 +1,110 @@
+graph(%self.1 : __torch__.intel_extension_for_pytorch.quantization._quantize_utils.___torch_mangle_12.QuantizationDispatchModule,
+      %dense.1 : Tensor,
+      %indices : (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor),
+      %offsets : (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)):
+  %4 : float = prim::Constant[value=0.034217081964015961]() # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %5 : int = prim::Constant[value=0]() # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %6 : int = prim::Constant[value=12]() # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %7 : float = prim::Constant[value=0.07121005654335022]() # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %8 : float = prim::Constant[value=423.25424194335938]() # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %9 : float = prim::Constant[value=1066086.]() # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %x.1 : Tensor, %x.3 : Tensor, %x.5 : Tensor, %x.7 : Tensor, %x.9 : Tensor, %x.11 : Tensor, %x.13 : Tensor, %x.15 : Tensor, %x.17 : Tensor, %x.19 : Tensor, %x.21 : Tensor, %x.23 : Tensor, %x.25 : Tensor, %x.27 : Tensor, %x.29 : Tensor, %x.31 : Tensor, %x.33 : Tensor, %x.35 : Tensor, %x.37 : Tensor, %x.39 : Tensor, %x.41 : Tensor, %x.43 : Tensor, %x.45 : Tensor, %x.47 : Tensor, %x.49 : Tensor, %x.51 : Tensor = prim::TupleUnpack(%indices)
+  %x.53 : Tensor, %x.55 : Tensor, %x.57 : Tensor, %x.59 : Tensor, %x.61 : Tensor, %x.63 : Tensor, %x.65 : Tensor, %x.67 : Tensor, %x.69 : Tensor, %x.71 : Tensor, %x.73 : Tensor, %x.75 : Tensor, %x.77 : Tensor, %x.79 : Tensor, %x.81 : Tensor, %x.83 : Tensor, %x.85 : Tensor, %x.87 : Tensor, %x.89 : Tensor, %x.91 : Tensor, %x.93 : Tensor, %x.95 : Tensor, %x.97 : Tensor, %x.99 : Tensor, %x.101 : Tensor, %x : Tensor = prim::TupleUnpack(%offsets)
+  %ret.1 : Tensor = aten::quantize_per_tensor(%dense.1, %4, %5, %6) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %ret.136 : Tensor = ipex::LlgaFusionGroup_0[output_layouts=[0]](%ret.1)
+  %64 : Tensor[] = prim::ListConstruct(%x.1, %x.3, %x.5, %x.7, %x.9, %x.11, %x.13, %x.15, %x.17, %x.19, %x.21, %x.23, %x.25, %x.27, %x.29, %x.31, %x.33, %x.35, %x.37, %x.39, %x.41, %x.43, %x.45, %x.47, %x.49, %x.51)
+  %65 : Tensor[] = prim::ListConstruct(%x.53, %x.55, %x.57, %x.59, %x.61, %x.63, %x.65, %x.67, %x.69, %x.71, %x.73, %x.75, %x.77, %x.79, %x.81, %x.83, %x.85, %x.87, %x.89, %x.91, %x.93, %x.95, %x.97, %x.99, %x.101, %x)
+  %66 : Tensor[] = prim::Constant[value=[<Tensors>]]()
+  %67 : Tensor = ipex::qmerged_embeddingbag_cat(%66, %64, %65, %ret.136, %7, %5, %6)
+  %68 : Tensor = aten::dequantize(%67)
+  %ret.128 : Tensor = ipex::LlgaFusionGroup_1[output_layouts=[1]](%67)
+  %ret.112 : Tensor = ipex::LlgaFusionGroup_2[output_layouts=[0]](%68, %68, %ret.128)
+  %ret.31 : Tensor = aten::quantize_per_tensor(%ret.112, %8, %5, %6) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %ret.100 : Tensor = ipex::LlgaFusionGroup_3[output_layouts=[1]](%ret.31)
+  %ret.84 : Tensor = ipex::LlgaFusionGroup_4[output_layouts=[0]](%ret.112, %68, %ret.100)
+  %ret.47 : Tensor = aten::quantize_per_tensor(%ret.84, %9, %5, %6) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %ret.72 : Tensor = ipex::LlgaFusionGroup_5[output_layouts=[1]](%ret.47)
+  %ret.2 : Tensor = ipex::LlgaFusionGroup_6[output_layouts=[0]](%ret.84, %68, %ret.72)
+  %77 : (Tensor, Tensor) = prim::TupleConstruct(%ret.2, %68)
+  return (%77)
+with ipex::LlgaFusionGroup_0 = graph(%ret.1 : QInt8(2048, 13, strides=[13, 1], requires_grad=0, device=cpu)):
+  %ret.148 : Float(2048, 13, strides=[13, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_tensor", zps=[0], scales=[0.034217081964015961]](%ret.1) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %2 : QInt8(128, 13, strides=[13, 1], requires_grad=0, device=cpu) = prim::Constant[value=<Tensor>]()
+  %3 : Float(128, 13, strides=[13, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_channel", zps=<Tensor>, scales=<Tensor>, axis=0](%2) # /home/haozhe/lz/frameworks.ai.pytorch.ipex-cpu/intel_extension_for_pytorch/quantization/_quantization_state.py:474:0
+  %self.dense.linear.bias : Float(128, strides=[1], requires_grad=0, device=cpu) = prim::Constant[value=<Tensor>]()
+  %ret.144 : Float(2048, 128, strides=[128, 1], requires_grad=0, device=cpu) = aten::linear(%ret.148, %3, %self.dense.linear.bias) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %ret.140 : Float(2048, 128, strides=[128, 1], requires_grad=0, device=cpu) = aten::relu(%ret.144), scope: __module.dense.relu # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/nn/functional.py:1473:0
+  %7 : float = prim::Constant[value=0.023922638967633247]()
+  %8 : int = prim::Constant[value=0]()
+  %9 : int = prim::Constant[value=12]()
+  %ret.136 : QInt8(2048, 128, strides=[128, 1], requires_grad=0, device=cpu) = aten::quantize_per_tensor(%ret.140, %7, %8, %9) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  return (%ret.136)
+with ipex::LlgaFusionGroup_1 = graph(%ret.15 : QInt8(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu)):
+  %1 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_tensor", zps=[0], scales=[0.07121005654335022]](%ret.15)
+  %2 : QInt8(512, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = prim::Constant[value=<Tensor>]()
+  %3 : Float(512, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_channel", zps=<Tensor>, scales=<Tensor>, axis=0](%2) # /home/haozhe/lz/frameworks.ai.pytorch.ipex-cpu/intel_extension_for_pytorch/quantization/_quantization_state.py:474:0
+  %4 : NoneType = prim::Constant()
+  %ret.132 : Float(2048, 512, strides=[512, 1], requires_grad=0, device=cpu) = aten::linear(%1, %3, %4) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %6 : float = prim::Constant[value=4.2065792083740234]()
+  %7 : int = prim::Constant[value=0]()
+  %8 : int = prim::Constant[value=12]()
+  %ret.128 : QInt8(2048, 512, strides=[512, 1], requires_grad=0, device=cpu) = aten::quantize_per_tensor(%ret.132, %6, %7, %8) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  return (%ret.128)
+with ipex::LlgaFusionGroup_2 = graph(%0 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu),
+      %1 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu),
+      %ret.21 : QInt8(2048, 512, strides=[512, 1], requires_grad=0, device=cpu)):
+  %ret.124 : Float(2048, 512, strides=[512, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_tensor", zps=[0], scales=[4.2065792083740234]](%ret.21) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %4 : QInt8(3456, 512, strides=[512, 1], requires_grad=0, device=cpu) = prim::Constant[value=<Tensor>]()
+  %5 : Float(3456, 512, strides=[512, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_channel", zps=<Tensor>, scales=<Tensor>, axis=0](%4) # /home/haozhe/lz/frameworks.ai.pytorch.ipex-cpu/intel_extension_for_pytorch/quantization/_quantization_state.py:474:0
+  %self.cross_net.MLPs.W2.bias : Float(3456, strides=[1], requires_grad=0, device=cpu) = prim::Constant[value=<Tensor>]()
+  %ret.120 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::linear(%ret.124, %5, %self.cross_net.MLPs.W2.bias) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %ret.116 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::mul[was_float=1](%1, %ret.120) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %9 : int = prim::Constant[value=1]()
+  %ret.112 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::add[was_float=1](%ret.116, %0, %9) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  return (%ret.112)
+with ipex::LlgaFusionGroup_3 = graph(%ret.31 : QInt8(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu)):
+  %ret.108 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_tensor", zps=[0], scales=[423.25424194335938]](%ret.31) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %2 : QInt8(512, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = prim::Constant[value=<Tensor>]()
+  %3 : Float(512, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_channel", zps=<Tensor>, scales=<Tensor>, axis=0](%2) # /home/haozhe/lz/frameworks.ai.pytorch.ipex-cpu/intel_extension_for_pytorch/quantization/_quantization_state.py:474:0
+  %4 : NoneType = prim::Constant()
+  %ret.104 : Float(2048, 512, strides=[512, 1], requires_grad=0, device=cpu) = aten::linear(%ret.108, %3, %4) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %6 : float = prim::Constant[value=9165.0986328125]()
+  %7 : int = prim::Constant[value=0]()
+  %8 : int = prim::Constant[value=12]()
+  %ret.100 : QInt8(2048, 512, strides=[512, 1], requires_grad=0, device=cpu) = aten::quantize_per_tensor(%ret.104, %6, %7, %8) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  return (%ret.100)
+with ipex::LlgaFusionGroup_4 = graph(%ret.29 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu),
+      %1 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu),
+      %ret.37 : QInt8(2048, 512, strides=[512, 1], requires_grad=0, device=cpu)):
+  %ret.96 : Float(2048, 512, strides=[512, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_tensor", zps=[0], scales=[9165.0986328125]](%ret.37) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %4 : QInt8(3456, 512, strides=[512, 1], requires_grad=0, device=cpu) = prim::Constant[value=<Tensor>]()
+  %5 : Float(3456, 512, strides=[512, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_channel", zps=<Tensor>, scales=<Tensor>, axis=0](%4) # /home/haozhe/lz/frameworks.ai.pytorch.ipex-cpu/intel_extension_for_pytorch/quantization/_quantization_state.py:474:0
+  %self.cross_net.MLPs.W2.bias : Float(3456, strides=[1], requires_grad=0, device=cpu) = prim::Constant[value=<Tensor>]()
+  %ret.92 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::linear(%ret.96, %5, %self.cross_net.MLPs.W2.bias) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %ret.88 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::mul[was_float=1](%1, %ret.92) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %9 : int = prim::Constant[value=1]()
+  %ret.84 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::add[was_float=1](%ret.88, %ret.29, %9) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  return (%ret.84)
+with ipex::LlgaFusionGroup_5 = graph(%ret.47 : QInt8(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu)):
+  %ret.80 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_tensor", zps=[0], scales=[1066086.]](%ret.47) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %2 : QInt8(512, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = prim::Constant[value=<Tensor>]()
+  %3 : Float(512, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_channel", zps=<Tensor>, scales=<Tensor>, axis=0](%2) # /home/haozhe/lz/frameworks.ai.pytorch.ipex-cpu/intel_extension_for_pytorch/quantization/_quantization_state.py:474:0
+  %4 : NoneType = prim::Constant()
+  %ret.76 : Float(2048, 512, strides=[512, 1], requires_grad=0, device=cpu) = aten::linear(%ret.80, %3, %4) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %6 : float = prim::Constant[value=21073920.]()
+  %7 : int = prim::Constant[value=0]()
+  %8 : int = prim::Constant[value=12]()
+  %ret.72 : QInt8(2048, 512, strides=[512, 1], requires_grad=0, device=cpu) = aten::quantize_per_tensor(%ret.76, %6, %7, %8) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  return (%ret.72)
+with ipex::LlgaFusionGroup_6 = graph(%ret.45 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu),
+      %1 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu),
+      %ret.53 : QInt8(2048, 512, strides=[512, 1], requires_grad=0, device=cpu)):
+  %ret.68 : Float(2048, 512, strides=[512, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_tensor", zps=[0], scales=[21073920.]](%ret.53) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %4 : QInt8(3456, 512, strides=[512, 1], requires_grad=0, device=cpu) = prim::Constant[value=<Tensor>]()
+  %5 : Float(3456, 512, strides=[512, 1], requires_grad=0, device=cpu) = aten::dequantize[qtype="per_channel", zps=<Tensor>, scales=<Tensor>, axis=0](%4) # /home/haozhe/lz/frameworks.ai.pytorch.ipex-cpu/intel_extension_for_pytorch/quantization/_quantization_state.py:474:0
+  %self.cross_net.MLPs.W2.bias : Float(3456, strides=[1], requires_grad=0, device=cpu) = prim::Constant[value=<Tensor>]()
+  %ret.64 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::linear(%ret.68, %5, %self.cross_net.MLPs.W2.bias) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %ret.60 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::mul[was_float=1](%1, %ret.64) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  %9 : int = prim::Constant[value=1]()
+  %ret.2 : Float(2048, 3456, strides=[3456, 1], requires_grad=0, device=cpu) = aten::add[was_float=1](%ret.60, %ret.45, %9) # /home/haozhe/mininconda3/envs/lz/lib/python3.9/site-packages/torch/_tensor.py:1299:0
+  return (%ret.2)
