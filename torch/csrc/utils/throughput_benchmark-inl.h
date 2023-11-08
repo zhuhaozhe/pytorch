@@ -8,7 +8,10 @@
 #include <torch/csrc/utils/pybind.h>
 
 #include <ATen/Parallel.h>
+#include <c10/core/GradMode.h>
 #include <c10/util/irange.h>
+#include <c10/core/impl/LocalDispatchKeySet.h>
+#include <ATen/autocast_mode.h>
 
 namespace torch {
 namespace throughput_benchmark {
@@ -60,10 +63,21 @@ BenchmarkExecutionStats BenchmarkHelper<Input, Output, Model>::benchmark(
   std::vector<std::thread> callers;
 
   callers.reserve(config.num_calling_threads);
+
+  bool tls_grad_enabled = c10::GradMode::is_enabled();
+  DispatchKeySet tls_include = c10::impl::tls_local_dispatch_key_set().included_;
+  DispatchKeySet tls_exclude = c10::impl::tls_local_dispatch_key_set().excluded_;
+
+
   for (const auto thread_id : c10::irange(config.num_calling_threads)) {
     callers.emplace_back([&, thread_id]() {
       // We use conditional variable as a barrier to make sure each thread
       // performs required warmeup iterations before we start measuring
+      GradMode::set_enabled(tls_grad_enabled);
+      c10::impl::IncludeDispatchKeyGuard include_guard(tls_include);
+      c10::impl::IncludeDispatchKeyGuard exclude_guard(tls_exclude);
+      at::autocast::set_cpu_enabled(true);
+
       for (const auto j : c10::irange(config.num_warmup_iters)) {
         (void)j;
         runOnce(std::move(thread_inputs[thread_id][input_iters[thread_id]]));
