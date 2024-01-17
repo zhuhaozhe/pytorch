@@ -14,8 +14,7 @@ C10_DEFINE_bool(
     true,
     "If on, static runtime or optimize_sparse_nn_model will fuse clip ranges gather ops.");
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 bool graphHasOp(std::shared_ptr<Graph>& graph, const char* op_name) {
   DepthFirstGraphNodeIterator graph_it(graph);
@@ -505,7 +504,7 @@ std::vector<TupleUnpackBlock> CollectVariadicTupleUnpackFusionCandidates(
 }
 
 void FuseTupleUnpackBlock(const TupleUnpackBlock& nodes) {
-  TORCH_CHECK(nodes.size() > 0);
+  TORCH_CHECK(!nodes.empty());
   auto graph = nodes[0]->owningGraph();
   auto var_unpack = graph->create(
       fromQualString("static_runtime::VarTupleUnpack"),
@@ -639,7 +638,7 @@ void ReplaceWithMaybeCopy(
     static const auto select_tensor_symbol =
         fromQualString("static_runtime::select_tensor");
     auto* select_tensor_node = graph->create(select_tensor_symbol, 1);
-    DCHECK_EQ(new_node->outputs().size(), 2);
+    TORCH_DCHECK_EQ(new_node->outputs().size(), 2);
     select_tensor_node->addInput(n->input(0));
     for (auto* output : new_node->outputs()) {
       select_tensor_node->addInput(output);
@@ -666,9 +665,9 @@ void ReplaceWithMaybeCopy(
 #endif
 }
 
-void ReplaceWithCopyImpl(
+static void ReplaceWithCopyImpl(
     std::shared_ptr<Graph>& graph,
-    const FastMap<c10::Symbol, c10::Symbol>& supported,
+    const c10::FastMap<c10::Symbol, c10::Symbol>& supported,
     const std::vector<std::pair<c10::FunctionSchema, c10::Symbol>>&
         supported_schema,
     const std::function<bool(Node*)>& f_extra_checks,
@@ -755,7 +754,7 @@ void ReplacePermuteWithCopy(
     std::shared_ptr<Graph>& graph,
     bool outputs_are_immutable) {
   AliasDb db(graph);
-  const FastMap<c10::Symbol, c10::Symbol> supported = {
+  const c10::FastMap<c10::Symbol, c10::Symbol> supported = {
 #ifdef FBCODE_CAFFE2
       OP_PAIR("aten::permute", "static_runtime::permute_copy"),
 #endif
@@ -777,7 +776,7 @@ void ReplaceWithCopy(
     std::shared_ptr<Graph>& graph,
     bool outputs_are_immutable) {
   AliasDb db(graph);
-  const FastMap<c10::Symbol, c10::Symbol> supported = {
+  const c10::FastMap<c10::Symbol, c10::Symbol> supported = {
 #ifdef FBCODE_CAFFE2
       OP_PAIR("aten::permute", "static_runtime::permute_copy"),
       OP_PAIR("fb::expand_dims", "static_runtime::expand_dims_copy"),
@@ -868,7 +867,7 @@ bool shouldNotFuseListUnpackSpecialCase(const Node* node) {
 } // namespace
 
 void FuseListUnpack(std::shared_ptr<torch::jit::Graph>& graph) {
-  const FastMap<c10::Symbol, c10::Symbol> unfused_to_fused = {
+  const c10::FastMap<c10::Symbol, c10::Symbol> unfused_to_fused = {
       OP_PAIR(
           "torcharrow::inference_wrapper_run_flat",
           "static_runtime::fused_inference_wrapper_run_flat"),
@@ -987,7 +986,7 @@ void RemoveImmutableInputDictLookups(
     }
     iter->second.push_back(getitem_node);
   }
-  if (keys.size() == 0) {
+  if (keys.empty()) {
     return;
   }
   // Move all keys to the beginning of the graph and insert new dict_unpack
@@ -996,7 +995,7 @@ void RemoveImmutableInputDictLookups(
   graph->prependNode(marker);
   graph->setInsertPoint(marker);
   for (Node* key : keys) {
-    DCHECK(key->inputs().size() == 0);
+    DCHECK(key->inputs().empty());
     key->moveBefore(marker);
   }
   const c10::Symbol static_runtime_dict_unpack_symbol =
@@ -1004,7 +1003,7 @@ void RemoveImmutableInputDictLookups(
   for (auto& it : dict_to_getitems) {
     Value* dict = it.first;
     std::vector<Node*>& getitems = it.second;
-    DCHECK(getitems.size() > 0);
+    DCHECK(!getitems.empty());
     auto* dict_unpack =
         graph->create(static_runtime_dict_unpack_symbol, getitems.size());
     graph->insertNode(dict_unpack);
@@ -1027,6 +1026,10 @@ void UseVariadicGroupedAccessor(const std::shared_ptr<Graph>& graph) {
       graph,
       fromQualString("grouped_accessor::grouped_accessor_op_v2"),
       fromQualString("static_runtime::variadic_grouped_accessor_op_v2"));
+  UseVariadicOp(
+      graph,
+      fromQualString("fb::grouped_accessor_op_async"),
+      fromQualString("static_runtime::variadic_grouped_accessor_op_async"));
 }
 
 namespace {
@@ -1039,6 +1042,11 @@ void CreateOwnedRefsForSpecialValuesHelper(Graph& graph, Block* block) {
   }
 
   auto outputs = block->outputs();
+  // Create owned refs for inputs. Otherwise, the input cleanup process
+  // will destroy our outputs before we return.
+  c10::FastSet<Value*> inputs = {
+      block->inputs().begin(), block->inputs().end()};
+
   for (const auto i : c10::irange(outputs.size())) {
     auto* output = outputs[i];
 
@@ -1048,7 +1056,7 @@ void CreateOwnedRefsForSpecialValuesHelper(Graph& graph, Block* block) {
       continue;
     }
 
-    if (toIValue(output).has_value() ||
+    if ((inputs.find(output) != inputs.end()) || toIValue(output).has_value() ||
         // If the output's owning block is not this one, it's from an outer
         // scope
         output->node()->owningBlock() != block) {
@@ -1423,5 +1431,26 @@ void FuseClampNaNToNum(std::shared_ptr<Graph>& graph) {
 #endif
 }
 
-} // namespace jit
-} // namespace torch
+void PrepackWeights(std::shared_ptr<Graph>& graph) {
+  const auto pattern = R"IR(
+    graph(%input: Tensor, %weight: Tensor, %bias: Tensor?, %scale: Tensor, %zero_point: Tensor):
+        %result: Tensor = fb::quantized_linear_unpacked_weight_v2(%input, %weight, %bias, %scale, %zero_point)
+        return (%result)
+  )IR";
+
+  const auto split_pattern = R"IR(
+    graph(%input: Tensor, %weight: Tensor, %bias: Tensor?, %scale: Tensor, %zero_point: Tensor):
+        %packed_params = quantized::linear_prepack(%weight, %bias)
+        %scale_float: float = aten::item(%scale)
+        %zero_point_int: int = aten::item(%zero_point)
+        %result: Tensor = quantized::linear(%input, %packed_params, %scale_float, %zero_point_int)
+        return (%result)
+  )IR";
+
+  SubgraphRewriter fuse;
+  fuse.RegisterRewritePattern(pattern, split_pattern);
+  fuse.runOnGraph(graph);
+  // Constant propagation should be called after this pass + others.
+}
+
+} // namespace torch::jit

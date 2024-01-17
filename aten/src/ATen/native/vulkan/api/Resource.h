@@ -1,20 +1,25 @@
 #pragma once
 
+// @lint-ignore-every CLANGTIDY facebook-hte-BadMemberName
+
 #ifdef USE_VULKAN_API
 
-#include <ATen/native/vulkan/api/Allocator.h>
-#include <c10/util/hash.h>
+#include <ATen/native/vulkan/api/vk_api.h>
 
+#include <ATen/native/vulkan/api/Allocator.h>
+#include <ATen/native/vulkan/api/Types.h>
+#include <ATen/native/vulkan/api/Utils.h>
+
+#include <mutex>
 #include <stack>
+#include <unordered_map>
 
 namespace at {
 namespace native {
 namespace vulkan {
 namespace api {
 
-typedef uint8_t MemoryAccessFlags;
-
-VkFormat vk_format(const caffe2::TypeMeta dtype);
+using MemoryAccessFlags = uint8_t;
 
 constexpr VmaAllocationCreateFlags DEFAULT_ALLOCATION_STRATEGY =
     VMA_ALLOCATION_CREATE_STRATEGY_MIN_MEMORY_BIT;
@@ -104,6 +109,10 @@ class VulkanBuffer final {
     return buffer_properties_.mem_range;
   }
 
+  inline VkDeviceSize mem_size() const {
+    return buffer_properties_.size;
+  }
+
   operator bool() const {
     return (allocation_ != VK_NULL_HANDLE);
   }
@@ -128,11 +137,16 @@ class MemoryMap final {
   VmaAllocator allocator_;
   VmaAllocation allocation_;
   void* data_;
+  VkDeviceSize data_len_;
 
  public:
   template <typename T>
   T* data() {
     return reinterpret_cast<T*>(data_);
+  }
+
+  inline size_t nbytes() {
+    return utils::safe_downcast<size_t>(data_len_);
   }
 
   void invalidate();
@@ -156,7 +170,7 @@ class ImageSampler final {
     VkBorderColor border_color;
   };
 
-  explicit ImageSampler(const VkDevice, const Properties&);
+  explicit ImageSampler(VkDevice, const Properties&);
 
   ImageSampler(const ImageSampler&) = delete;
   ImageSampler& operator=(const ImageSampler&) = delete;
@@ -208,7 +222,7 @@ class VulkanImage final {
     VkFormat view_format;
   };
 
-  typedef ImageSampler::Properties SamplerProperties;
+  using SamplerProperties = ImageSampler::Properties;
 
   struct Handles final {
     VkImage image;
@@ -220,13 +234,13 @@ class VulkanImage final {
 
   explicit VulkanImage(
       const VmaAllocator,
-      const VkDevice,
+      VkDevice,
       const MemoryProperties&,
       const ImageProperties&,
       const ViewProperties&,
       const SamplerProperties&,
       const VkImageLayout layout,
-      const VkSampler);
+      VkSampler);
 
   VulkanImage(const VulkanImage&) = delete;
   VulkanImage& operator=(const VulkanImage&) = delete;
@@ -265,6 +279,10 @@ class VulkanImage final {
 
   inline VmaAllocation allocation() const {
     return allocation_;
+  }
+
+  inline VkFormat format() const {
+    return image_properties_.image_format;
   }
 
   inline VkExtent3D extents() const {
@@ -318,7 +336,7 @@ struct ImageMemoryBarrier final {
 
 class SamplerCache final {
  public:
-  explicit SamplerCache(const VkDevice device);
+  explicit SamplerCache(VkDevice device);
 
   SamplerCache(const SamplerCache&) = delete;
   SamplerCache& operator=(const SamplerCache&) = delete;
@@ -328,9 +346,9 @@ class SamplerCache final {
 
   ~SamplerCache();
 
-  typedef ImageSampler::Properties Key;
-  typedef ImageSampler Value;
-  typedef ImageSampler::Hasher Hasher;
+  using Key = ImageSampler::Properties;
+  using Value = ImageSampler;
+  using Hasher = ImageSampler::Hasher;
 
  private:
   // Multiple threads could potentially be adding entries into the cache, so use
@@ -338,7 +356,7 @@ class SamplerCache final {
   std::mutex cache_mutex_;
 
   VkDevice device_;
-  ska::flat_hash_map<Key, Value, Hasher> cache_;
+  std::unordered_map<Key, Value, Hasher> cache_;
 
  public:
   VkSampler retrieve(const Key&);
@@ -348,9 +366,9 @@ class SamplerCache final {
 class MemoryAllocator final {
  public:
   explicit MemoryAllocator(
-      const VkInstance instance,
-      const VkPhysicalDevice physical_device,
-      const VkDevice device);
+      VkInstance instance,
+      VkPhysicalDevice physical_device,
+      VkDevice device);
 
   MemoryAllocator(const MemoryAllocator&) = delete;
   MemoryAllocator& operator=(const MemoryAllocator&) = delete;
@@ -367,11 +385,13 @@ class MemoryAllocator final {
   VmaAllocator allocator_;
 
  public:
-  VulkanImage create_image3d(
+  VulkanImage create_image(
       const VkExtent3D&,
+      const VkFormat,
+      const VkImageType,
+      const VkImageViewType,
       const VulkanImage::SamplerProperties&,
-      const VkSampler,
-      const caffe2::TypeMeta dtype,
+      VkSampler,
       const bool allow_transfer = false);
 
   VulkanBuffer create_storage_buffer(
@@ -380,6 +400,14 @@ class MemoryAllocator final {
 
   VulkanBuffer create_staging_buffer(const VkDeviceSize);
 
+  /*
+   * Create a uniform buffer with a specified size
+   */
+  VulkanBuffer create_uniform_buffer(const VkDeviceSize);
+
+  /*
+   * Create a uniform buffer containing the data in an arbitrary struct
+   */
   template <typename Block>
   VulkanBuffer create_params_buffer(const Block& block);
 };
@@ -390,7 +418,7 @@ class VulkanFence final {
   //       It will be disabled pending future refactors.
   explicit VulkanFence();
 
-  explicit VulkanFence(const VkDevice);
+  explicit VulkanFence(VkDevice);
 
   VulkanFence(const VulkanFence&) = delete;
   VulkanFence& operator=(const VulkanFence&) = delete;
@@ -438,7 +466,7 @@ struct FencePool final {
 
   std::stack<VulkanFence> pool_;
 
-  explicit FencePool(const VkDevice device) : device_(device), pool_{} {}
+  explicit FencePool(VkDevice device) : device_(device), pool_{} {}
 
   // Returns an rvalue reference to a fence, so that it can be moved
   inline VulkanFence get_fence() {
@@ -465,15 +493,7 @@ struct FencePool final {
 
 template <typename Block>
 inline VulkanBuffer MemoryAllocator::create_params_buffer(const Block& block) {
-  const VulkanBuffer::MemoryProperties mem_props{
-      DEFAULT_ALLOCATION_STRATEGY,
-      VMA_MEMORY_USAGE_CPU_TO_GPU,
-      0u,
-      0u,
-      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-  };
-
-  VulkanBuffer uniform_buffer(allocator_, sizeof(Block), mem_props);
+  VulkanBuffer uniform_buffer = create_uniform_buffer(sizeof(Block));
 
   // Fill the uniform buffer with data in block
   {

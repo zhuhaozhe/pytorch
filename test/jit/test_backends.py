@@ -52,9 +52,6 @@ class BasicModule(torch.nn.Module):
     A simple Module used to test to_backend lowering machinery.
     """
 
-    def __init__(self):
-        super().__init__()
-
     def forward(self, x, h):
         return self.accum(x, h), self.sub_accum(x, h)
 
@@ -476,9 +473,6 @@ class BasicModuleAdd(torch.nn.Module):
     A simple add Module used to test to_backend lowering machinery.
     """
 
-    def __init__(self):
-        super().__init__()
-
     def forward(self, x, h):
         return x + h
 
@@ -568,15 +562,9 @@ class ErrorMessagesWithCompiler(JitBackendTestCase):
         """
         A module with an operator that is not supported.
         """
-        def __init__(self):
-            super().__init__()
-
         def forward(self, x, h):
             return x * h
             self._loweredmodule.forward()
-
-    def setUp(self):
-        super().setUp()
 
     def test_errors(self):
         scripted_module_n = torch.jit.script(ErrorMessagesWithCompiler.ModuleNotSupported())
@@ -600,9 +588,6 @@ class CompModuleTestWithCompiler(JitBackendTestCase):
         """
         A simple subtraction Module to be used in CompModule.
         """
-        def __init__(self):
-            super().__init__()
-
         def forward(self, x, h):
             return x - h
 
@@ -656,7 +641,7 @@ class CompModuleTestWithCompiler(JitBackendTestCase):
         self.check_function("forward", (input1, input2, input2))
 
 # This is needed for IS_WINDOWS or IS_MACOS to skip the tests.
-@unittest.skipIf(TEST_WITH_ROCM or IS_SANDCASTLE or IS_WINDOWS or IS_MACOS or IS_FBCODE,
+@unittest.skipIf(IS_SANDCASTLE or IS_WINDOWS or IS_MACOS or IS_FBCODE,
                  "Non-portable load_library call used in test")
 class TestBackendsWithCompiler(JitTestCase):
     """
@@ -672,17 +657,14 @@ class TestBackendsWithCompiler(JitTestCase):
 
     def setUp(self):
         super().setUp()
-        if not TEST_WITH_ROCM:
-            self.basic_module_compiler_test.setUp()
-            self.error_module_compiler_test.setUp()
-            self.comp_module_compiler_test.setUp()
+        self.basic_module_compiler_test.setUp()
+        self.error_module_compiler_test.setUp()
+        self.comp_module_compiler_test.setUp()
 
-    @skipIfRocm
     def test_execution(self):
         self.basic_module_compiler_test.test_execution()
         self.comp_module_compiler_test.test_execution()
 
-    @skipIfRocm
     def test_errors(self):
         self.error_module_compiler_test.test_errors()
 
@@ -696,9 +678,6 @@ class CompModuleTestSameNameWithCompiler(JitBackendTestCase):
         """
         A simple Module used to test to_backend lowering machinery.
         """
-
-        def __init__(self):
-            super().__init__()
 
         def forward(self, x, h):
             return x + h
@@ -717,12 +696,12 @@ class CompModuleTestSameNameWithCompiler(JitBackendTestCase):
             }
             self.add = torch._C._jit_to_backend(
                 "backend_with_compiler_demo",
-                torch.jit.script(ModuleAdd()),
+                torch.jit.script(ModuleAdd()),  # noqa: F821
                 compile_spec,
             )
             self.sub = torch._C._jit_to_backend(
                 "backend_with_compiler_demo",
-                torch.jit.script(ModuleAdd()),
+                torch.jit.script(ModuleAdd()),  # noqa: F821
                 compile_spec,
             )
 
@@ -736,7 +715,7 @@ class CompModuleTestSameNameWithCompiler(JitBackendTestCase):
     def setUp(self):
         super().setUp()
 
-        self.module = CompModule()
+        self.module = CompModule()  # noqa: F821
         self.scripted_module = torch.jit.script(self.module)
         buffer = io.BytesIO(self.scripted_module._save_to_buffer_for_lite_interpreter())
         buffer.seek(0)
@@ -768,7 +747,7 @@ class AddedAttributesTest(JitBackendTestCase):
         input = [(torch.ones(5),)]
         pre_bundled = self.lowered_module(*input[0])
         # Attach bundled inputs which adds several attributes and functions to the model
-        self.lowered_module = torch.utils.bundled_inputs.augment_model_with_bundled_inputs(lowered_module, input)
+        self.lowered_module = torch.utils.bundled_inputs.augment_model_with_bundled_inputs(lowered_module, input)  # noqa: F821
         post_bundled = self.lowered_module(*self.lowered_module.get_all_bundled_inputs()[0])
         # Save and load the lowered module.
         self.save_load()

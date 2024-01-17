@@ -1,4 +1,4 @@
-# Owner(s): ["oncall: fx"]
+# Owner(s): ["module: fx"]
 import operator
 import unittest
 from torch.fx import GraphModule, symbolic_trace
@@ -7,7 +7,7 @@ from torch.fx.experimental.migrate_gradual_types.constraint import BinConstraint
 from torch.fx.experimental.migrate_gradual_types.constraint_generator import ConstraintGenerator
 from torch.fx.experimental.migrate_gradual_types.constraint_transformation import transform_constraint
 from torch.fx.experimental.migrate_gradual_types.operation import op_precision, op_matching, op_consistency
-from torch.fx.experimental.migrate_gradual_types.transform_to_z3 import transform_all_constraints,\
+from torch.fx.experimental.migrate_gradual_types.transform_to_z3 import transform_all_constraints, \
     evaluate_conditional_with_constraints
 from torch.fx.experimental.migrate_gradual_types.z3_types import tensor_type, D, z3_dyn
 from torch.fx.experimental.rewriter import RewritingTracer
@@ -29,14 +29,188 @@ except ImportError:
     HAS_TORCHVISION = False
 skipIfNoTorchVision = unittest.skipIf(not HAS_TORCHVISION, "no torchvision")
 
+class TorchDynamoUseCases(unittest.TestCase):
+
+    def test_dim(self):
+        class BasicBlock(torch.nn.Module):
+            def forward(self, x: TensorType([1, 2])):
+                y = x.dim()
+                return y
+
+        symbolic_traced: torch.fx.GraphModule = symbolic_trace(BasicBlock())
+        transformed = transform_all_constraints(symbolic_traced, counter=0)
+        s = z3.Solver()
+        s.add(transformed)
+        self.assertEqual(s.check(), z3.sat)
+        y_res = z3.z3.Int(2)
+        self.assertEqual(s.model()[y_res], 2)
+
+
+    def test_reshape(self):
+        """
+        In this example, we prove that some nodes must
+        always have a fixed shape regardless of the input
+        """
+
+        class BasicBlock(torch.nn.Module):
+            def forward(self, x: Dyn):
+                y = x.view(100)
+                tmp = y.size()[0]
+                return tmp
+
+        symbolic_traced: torch.fx.GraphModule = symbolic_trace(BasicBlock())
+        transformed = transform_all_constraints(symbolic_traced, counter=0)
+
+        s = z3.Solver()
+        s.add(transformed)
+        self.assertEqual(s.check(), z3.sat)
+        dim = z3.Int(4)
+        self.assertEqual(s.model()[dim], 100)
+        # print(s.model()[dim])
+
 
 class HFOperations(unittest.TestCase):
 
+    def test_eq_dim(self):
+        """
+        test dimensions and equalities
+        """
+        class BasicBlock(torch.nn.Module):
+            def forward(self, x: TensorType([32, 4, 4])):
+                eq = x.dim() == 3
+                return eq
+
+        ast_rewriter = RewritingTracer()
+        graph = ast_rewriter.trace(BasicBlock())
+
+        # The node we are considering is the gt node
+        for n in graph.nodes:
+            if n.target == operator.eq:
+                node = n
+
+        positive, negative = evaluate_conditional_with_constraints(ast_rewriter.root, graph, node)
+        self.assertEqual(positive, z3.sat)
+        self.assertEqual(negative, z3.unsat)
+
+    def test_conditional_ne_1(self):
+        """
+        This test case is for the HFmodels interface.
+        A function takes a node and a graph and considers
+        the conditional the node represents and its negation
+        and solves each formula with the remaining sets of constraints
+        Returns:
+
+        """
+        class BasicBlock(torch.nn.Module):
+            def forward(self, x: TensorType([32, 4, 4]), y: TensorType([32, 4, 4])):
+                size_5 = x.size()
+                getitem_7 = size_5[0]
+                getitem_8 = size_5[1]
+                getitem_9 = size_5[2]
+                ne_1 = y != (getitem_7, getitem_8, getitem_9)
+                return ne_1
+
+        ast_rewriter = RewritingTracer()
+        graph = ast_rewriter.trace(BasicBlock())
+
+        # The node we are considering is the gt node
+        for n in graph.nodes:
+            if n.target == operator.ne:
+                node = n
+
+        # since x and y are equal, the requirement that x != y cannot be true, so we should get unsat
+        # for the positive condition and sat for the negative condition
+        positive, negative = evaluate_conditional_with_constraints(ast_rewriter.root, graph, node)
+        self.assertEqual(positive, z3.unsat)
+        self.assertEqual(negative, z3.sat)
+
+    def test_bmm(self):
+        class BasicBlock(torch.nn.Module):
+            def forward(self, x: TensorType([Dyn, 2, 3]), y: TensorType([1, 3, 2])):
+                bmm = torch.bmm(x, y)
+                return bmm
+
+        symbolic_traced: torch.fx.GraphModule = symbolic_trace(BasicBlock())
+        b = BasicBlock().forward(torch.rand(1, 2, 3), torch.rand(1, 3, 2))
+        transformed = transform_all_constraints(symbolic_traced, counter=0)
+
+        s = z3.Solver()
+        s.add(transformed)
+
+        output = z3.Const(3, tensor_type)
+        self.assertEqual(s.check(), z3.sat)
+        self.assertEqual(s.model()[output].arg(0).arg(1), b.shape[0])
+        self.assertEqual(s.model()[output].arg(1).arg(1), b.shape[1])
+        self.assertEqual(s.model()[output].arg(2).arg(1), b.shape[2])
+
+
+    def test_bmm2(self):
+        class BasicBlock(torch.nn.Module):
+            def forward(self, x: Dyn, y: TensorType([1, 3, 2])):
+                bmm = torch.bmm(x, y)
+                return bmm
+
+        symbolic_traced: torch.fx.GraphModule = symbolic_trace(BasicBlock())
+        b = BasicBlock().forward(torch.rand(1, 2, 3), torch.rand(1, 3, 2))
+        transformed = transform_all_constraints(symbolic_traced, counter=0)
+
+        s = z3.Solver()
+        s.add(transformed)
+
+        output = z3.Const(3, tensor_type)
+        self.assertEqual(s.check(), z3.sat)
+        self.assertEqual(s.model()[output].arg(0).arg(1), b.shape[0])
+        self.assertEqual(s.model()[output].arg(1).arg(0), 0)
+        self.assertEqual(s.model()[output].arg(2).arg(1), b.shape[2])
+
+    def test_bmm3(self):
+        class BasicBlock(torch.nn.Module):
+            def forward(self, x: TensorType([2, 3, 3]), y: TensorType([1, 3, 2])):
+                bmm = torch.bmm(x, y)
+                return bmm
+
+        symbolic_traced: torch.fx.GraphModule = symbolic_trace(BasicBlock())
+        transformed = transform_all_constraints(symbolic_traced, counter=0)
+
+        s = z3.Solver()
+        s.add(transformed)
+        self.assertEqual(s.check(), z3.unsat)
+
+
+    def test_transpose(self):
+        class BasicBlock(torch.nn.Module):
+            def forward(self, x: TensorType([1, 2, 3, 4])):
+                transpose = x.transpose(0, 1)
+                return transpose
+
+        symbolic_traced: torch.fx.GraphModule = symbolic_trace(BasicBlock())
+        b = BasicBlock().forward(torch.rand(1, 2, 3, 4))
+
+        transformed = transform_all_constraints(symbolic_traced, counter=0)
+
+        s = z3.Solver()
+        s.add(transformed)
+        output = z3.Const(2, tensor_type)
+        self.assertEqual(s.check(), z3.sat)
+        self.assertEqual(s.model()[output].arg(0).arg(1), b.shape[0])
+        self.assertEqual(s.model()[output].arg(1).arg(1), b.shape[1])
+        self.assertEqual(s.model()[output].arg(2).arg(1), b.shape[2])
+        self.assertEqual(s.model()[output].arg(3).arg(1), b.shape[3])
+
+        # change the annotation to Dyn
+        for n in symbolic_traced.graph.nodes:
+            if n.op == 'placeholder':
+                n.type = Dyn
+
+        transformed = transform_all_constraints(symbolic_traced, counter=0)
+
+        s = z3.Solver()
+        s.add(transformed)
+        self.assertEqual(s.check(), z3.sat)
+
+
     def test_index_select(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([2050, 1024]), y: Dyn):
                 index_select = x.index_select(0, y)
                 return index_select
@@ -68,9 +242,6 @@ class HFOperations(unittest.TestCase):
 
     def test_get_attr(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([1, 2, 3])):
                 getattr = x.device
                 to = x.to(getattr)
@@ -90,9 +261,6 @@ class HFOperations(unittest.TestCase):
 
     def test_expand(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([1, 4])):
                 size = x.size()
                 getitem = size[-1]
@@ -106,7 +274,7 @@ class HFOperations(unittest.TestCase):
 
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         expand_res = z3.Const(4, tensor_type)
         assert s.model()[expand_res].arg(0).arg(1) == b.shape[0]
         assert s.model()[expand_res].arg(1).arg(1) == b.shape[1]
@@ -121,15 +289,12 @@ class HFOperations(unittest.TestCase):
 
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         assert s.model()[expand_res].arg(1).arg(1) == b.shape[1]
 
     def test_getitem_tensor(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([4, 4])):
                 getitem = x[(None, None, slice(None, None, None), slice(None, None, None))]
                 return getitem
@@ -142,7 +307,7 @@ class HFOperations(unittest.TestCase):
 
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         get_item_res = z3.Const(2, tensor_type)
         assert s.model()[get_item_res].arg(0).arg(1) == b.shape[0]
         assert s.model()[get_item_res].arg(1).arg(1) == b.shape[1]
@@ -165,9 +330,6 @@ class HFOperations(unittest.TestCase):
 
     def test_getitem_tensor2(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([4, 4])):
                 getitem = x[(None, None)]
                 return getitem
@@ -179,7 +341,7 @@ class HFOperations(unittest.TestCase):
         transformed = transform_all_constraints(symbolic_traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         get_item_res = z3.Const(2, tensor_type)
         assert s.model()[get_item_res].arg(0).arg(1) == b.shape[0]
         assert s.model()[get_item_res].arg(1).arg(1) == b.shape[1]
@@ -189,9 +351,6 @@ class HFOperations(unittest.TestCase):
 
     def test_getitem_tensor_3(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([4, 4])):
                 getitem = x[(None, slice(None, None, None), None, slice(None, None, None))]
                 return getitem
@@ -202,7 +361,7 @@ class HFOperations(unittest.TestCase):
         transformed = transform_all_constraints(symbolic_traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         get_item_res = z3.Const(2, tensor_type)
         assert s.model()[get_item_res].arg(0).arg(1) == b.shape[0]
         assert s.model()[get_item_res].arg(1).arg(1) == b.shape[1]
@@ -215,7 +374,7 @@ class HFOperations(unittest.TestCase):
 
         class BasicBlock(torch.nn.Module):
             def __init__(self):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.l = torch.nn.LayerNorm((1024,))
 
             def forward(self, x: Dyn):
@@ -228,7 +387,7 @@ class HFOperations(unittest.TestCase):
 
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         # make the output a size 1 tensor which should result
         # in the migration of the input
@@ -267,12 +426,37 @@ class HFOperations(unittest.TestCase):
         self.assertEqual(s.model()[output].arg(0).arg(1), b[0])
         self.assertEqual(s.model()[output].arg(1).arg(1), b[1])
 
+
+    def test_layer_norm_functional(self):
+
+        class BasicBlock(torch.nn.Module):
+            def forward(self, x: Dyn):
+                return torch.nn.functional.layer_norm(x, (1024,))
+
+        ast_rewriter = RewritingTracer()
+        graph = ast_rewriter.trace(BasicBlock())
+        traced = GraphModule(ast_rewriter.root, graph, "gm")
+        transformed = transform_all_constraints(traced, counter=0)
+
+        s = z3.Solver()
+        s.add(transformed)
+        self.assertEqual(s.check(), z3.sat)
+
+        # make the output a size 1 tensor which should result
+        # in the migration of the input
+
+        b = BasicBlock().forward(torch.rand(1024))
+        input = z3.Const(1, tensor_type)
+        output = z3.Const(2, tensor_type)
+        s.add(output == tensor_type.tensor1(D(1, 1024)))
+        s.check()
+        self.assertEqual(s.model()[input], s.model()[output])
+        # input shape = output shape
+        self.assertEqual(b.shape[0], s.model()[input].arg(0).arg(1))
+
     def test_ne_int_long_type_as(self):
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([Dyn, Dyn]), y: TensorType([Dyn, Dyn])):
                 ne_int = torch.ne(x, y).int()
                 type_as = ne_int.type_as(y)
@@ -283,7 +467,7 @@ class HFOperations(unittest.TestCase):
         transformed = transform_all_constraints(symbolic_traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         # migrate one of the parameters to a fully static shape so we can compare
 
@@ -295,7 +479,7 @@ class HFOperations(unittest.TestCase):
         s.add(input == tensor_type.tensor2(D(1, 2), D(1, 4)))
         s.add(input_2 == tensor_type.tensor2(D(1, s1), D(1, s2)))
 
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         actual_shape = BasicBlock().forward(torch.rand(2, 4), torch.rand(2, 4)).shape
         self.assertEqual(s.model()[output_long].arg(0).arg(1), actual_shape[0])
         self.assertEqual(s.model()[output_long].arg(1).arg(1), actual_shape[1])
@@ -307,9 +491,6 @@ class HFOperations(unittest.TestCase):
         d1, d2 = D(s11, s1), D(0, s2)
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: Dyn, y: Dyn):
                 return torch.ne(x, y)
 
@@ -320,7 +501,7 @@ class HFOperations(unittest.TestCase):
         transformed = transform_all_constraints(traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         # change the annotations
         for n in graph.nodes:
@@ -333,7 +514,7 @@ class HFOperations(unittest.TestCase):
         transformed = transform_all_constraints(traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         # force the second dimension to be Dyn
         # output should still be TensorType([2, 2])
@@ -348,9 +529,6 @@ class HFOperations(unittest.TestCase):
 
     def test_cumsum(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([Dyn, 4, 3])):
                 t = torch.cumsum(x, 3)
                 return t
@@ -402,9 +580,6 @@ class HFOperations(unittest.TestCase):
 
     def test_cumsum_kwargs(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([Dyn, 4, 3])):
                 t = torch.cumsum(x, dim=3)
                 return t
@@ -430,9 +605,6 @@ class HFOperations(unittest.TestCase):
 
     def test_arange(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([2, 4])):
                 size = x.size()
                 getitem = size[-1]
@@ -450,7 +622,7 @@ class HFOperations(unittest.TestCase):
         self.assertNotEqual(s.model()[arange_result].arg(0).arg(0).as_long(), 0)
         self.assertEqual(s.model()[arange_result].arg(0).arg(1).as_long(), B.size()[0])
 
-        # change the annotation to Dyn. This will migrate to an arbitirary type
+        # change the annotation to Dyn. This will migrate to an arbitrary type
         for n in symbolic_traced.graph.nodes:
             if n.op == 'placeholder':
                 n.type = Dyn
@@ -471,9 +643,6 @@ class HFOperations(unittest.TestCase):
 
     def test_scalar_add(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([2, 4])):
                 size = x.size()
                 getitem = size[-1]
@@ -494,9 +663,6 @@ class HFOperations(unittest.TestCase):
 
     def test_regular_add_2(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([2, 4])):
                 to = x.to()
                 size = to.size()
@@ -517,9 +683,6 @@ class HFOperations(unittest.TestCase):
 
     def test_regular_add_3(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([2, 4])):
                 to = x.to()
                 size = to.size()
@@ -540,7 +703,7 @@ class HFOperations(unittest.TestCase):
     def test_embedding(self):
         class BasicBlock(torch.nn.Module):
             def __init__(self):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.embedding = torch.nn.Embedding(256008, 1024, padding_idx=1)
 
             def forward(self, x: TensorType([2, 4])):
@@ -554,7 +717,7 @@ class HFOperations(unittest.TestCase):
         transformed = transform_all_constraints(traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         embedding_result = z3.Const(2, tensor_type)
 
         assert s.model()[embedding_result].arg(0).arg(1) == B[0]
@@ -569,12 +732,12 @@ class HFOperations(unittest.TestCase):
         transformed = transform_all_constraints(traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         assert s.model()[embedding_result].arg(0).arg(0) == 0
         assert s.model()[embedding_result].arg(1).arg(0) == 0
         assert s.model()[embedding_result].arg(2).arg(1) == B[2]
 
-        # change the type to Dyn. Here, we will get an arbitirary migration
+        # change the type to Dyn. Here, we will get an arbitrary migration
         for n in traced.graph.nodes:
             if n.op == 'placeholder':
                 n.type = Dyn
@@ -583,14 +746,30 @@ class HFOperations(unittest.TestCase):
         s = z3.Solver()
         s.add(transformed)
 
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
+
+    def test_embedding_2(self):
+        class BasicBlock(torch.nn.Module):
+            def forward(self, x: TensorType([2, 4]), y: TensorType([Dyn, 1024])):
+                return torch.nn.functional.embedding(x, y)
+
+        B = BasicBlock().forward(torch.ones([2, 4], dtype=torch.long), torch.rand(256008, 1024)).size()
+        ast_rewriter = RewritingTracer()
+        graph = ast_rewriter.trace(BasicBlock())
+        traced = GraphModule(ast_rewriter.root, graph, "gm")
+        transformed = transform_all_constraints(traced, counter=0)
+        s = z3.Solver()
+        s.add(transformed)
+        self.assertEqual(s.check(), z3.sat)
+        embedding_result = z3.Const(5, tensor_type)
+
+        assert s.model()[embedding_result].arg(0).arg(1) == B[0]
+        assert s.model()[embedding_result].arg(1).arg(1) == B[1]
+        assert s.model()[embedding_result].arg(2).arg(1) == B[2]
 
     def test_size_two_args(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([Dyn, 2, Dyn])):
                 size = x.size(-1)
                 return size
@@ -618,12 +797,8 @@ class HFOperations(unittest.TestCase):
         self.assertEqual(s.model()[d5], s.model()[d2])
         self.assertEqual(s.model()[d1], s.model()[d4])
 
-
     def test_size_getitem(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: Dyn):
                 size = x.size()
                 getitem = size[-1]
@@ -638,7 +813,7 @@ class HFOperations(unittest.TestCase):
         s = z3.Solver()
         s.add(transformed)
 
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         # force the input to be of size 4
 
@@ -650,18 +825,15 @@ class HFOperations(unittest.TestCase):
         s.add(input == tensor_type.tensor4(d1, d2, d3, d4))
 
         # check if the model is still SAT
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         s1, s2 = z3.Int(23), z3.Int(3)
 
         # check that the item is correct
-        self.assertEquals(s.model()[s1], s.model()[s2])
+        self.assertEqual(s.model()[s1], s.model()[s2])
 
         # invalid index but should still be SAT because input will be Dyn
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: Dyn):
                 size = x.size()
                 getitem = size[-10]
@@ -675,14 +847,14 @@ class HFOperations(unittest.TestCase):
         s = z3.Solver()
         s.add(transformed)
 
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         s.add(input != z3_dyn)
         self.assertEqual(s.check(), z3.unsat)
 
     def test_view_mul(self):
         class BasicBlock(torch.nn.Module):
             def __init__(self):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.embed_tokens = torch.nn.Embedding(256008, 1024, padding_idx=1)
 
             def forward(self, x: TensorType([2, 4])):
@@ -705,9 +877,10 @@ class HFOperations(unittest.TestCase):
         transformed = transform_all_constraints(traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
+        # print(s.model())
 
-        embedding_result = z3.Const(5, tensor_type)
+        embedding_result = z3.Const(6, tensor_type)
 
         # note that the view output will be: tensor3(dim(0, 0), dim(1, 4), dim(1, 1024))
         # this is due to the reshape constraints. This can be lifted
@@ -715,14 +888,11 @@ class HFOperations(unittest.TestCase):
         assert (s.model()[embedding_result].arg(1).arg(1)) == 4
         assert (s.model()[embedding_result].arg(2).arg(1)) == 1024
 
-        mul_result = z3.Const(12, tensor_type)
+        mul_result = z3.Const(13, tensor_type)
         assert s.model()[mul_result] == s.model()[embedding_result]
 
     def test_gt(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([Dyn, 4])):
                 size = x.size()
                 getitem_1 = size[-1]
@@ -736,15 +906,12 @@ class HFOperations(unittest.TestCase):
         transformed = transform_all_constraints(traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         res = z3.Bool(4)
         self.assertEqual(s.model()[res], True)
 
     def test_view(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([2, 4])):
                 view = x.view(-1, 8)
                 return view
@@ -756,13 +923,10 @@ class HFOperations(unittest.TestCase):
         transformed = transform_all_constraints(traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
     def test_lt_tensor(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([2, 4]), y: Dyn):
                 lt = x > y
                 return lt
@@ -774,8 +938,30 @@ class HFOperations(unittest.TestCase):
         transformed = transform_all_constraints(traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
+
+    def test_conditional_wrong_assumption(self):
+        """
+        Test condition after making the wrong assumption about the input
+        """
+        class BasicBlock(torch.nn.Module):
+            def forward(self, x: Dyn):
+                gt = x > 1
+                return gt
+
+        ast_rewriter = RewritingTracer()
+        graph = ast_rewriter.trace(BasicBlock())
+
+        # The node we are considering is the gt node
+        for n in graph.nodes:
+            if n.target == operator.gt:
+                node = n
+
+        positive, negative = evaluate_conditional_with_constraints(ast_rewriter.root, graph, node)
+
+        self.assertEqual(positive, z3.sat)
+        self.assertEqual(negative, z3.sat)
 
     def test_conditional(self):
         """
@@ -788,7 +974,7 @@ class HFOperations(unittest.TestCase):
         """
         class BasicBlock(torch.nn.Module):
             def __init__(self):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.embed_tokens = torch.nn.Embedding(256008, 1024, padding_idx=1)
 
             def forward(self, x: TensorType([Dyn, 4])):
@@ -848,7 +1034,7 @@ class HFOperations(unittest.TestCase):
         """
         class BasicBlock(torch.nn.Module):
             def __init__(self):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.embed_tokens = torch.nn.Embedding(256008, 1024, padding_idx=1)
 
             def forward(self, x: TensorType([Dyn, 4])):
@@ -878,9 +1064,6 @@ class ComposeOperationsGradualTypes(unittest.TestCase):
 
     def test_masked_fill(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([2, 4])):
                 size = x.size()
                 getitem = size[-1]
@@ -903,7 +1086,7 @@ class ComposeOperationsGradualTypes(unittest.TestCase):
         self.assertEqual(s.model()[masked_fill_res].arg(0).arg(1).as_long(), B.size()[0])
         self.assertEqual(s.model()[masked_fill_res].arg(1).arg(1).as_long(), B.size()[1])
 
-        # change the annotation to Dyn. This will migrate to an arbitirary type
+        # change the annotation to Dyn. This will migrate to an arbitrary type
         for n in symbolic_traced.graph.nodes:
             if n.op == 'placeholder':
                 n.type = Dyn
@@ -924,9 +1107,6 @@ class ComposeOperationsGradualTypes(unittest.TestCase):
 
     def test_add_reshape_1(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: Dyn, y: Dyn):
                 return torch.add(torch.reshape(x, (1, 2)), torch.reshape(y, (2, 2)))
 
@@ -938,13 +1118,10 @@ class ComposeOperationsGradualTypes(unittest.TestCase):
 
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
     def test_add_reshape_2(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: Dyn, y: Dyn):
                 return torch.add(torch.reshape(x, (-1, 2)), torch.reshape(y, (2, 2, 2)))
 
@@ -955,12 +1132,12 @@ class ComposeOperationsGradualTypes(unittest.TestCase):
         transformed = transform_all_constraints(traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
     def test_conv_reshape_add_0(self):
         class BasicBlock(torch.nn.Module):
             def __init__(self, in_planes, out_planes, kernel_size, stride, padding, groups, dilation):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.conv1 = torch.nn.Conv2d(in_channels=in_planes, out_channels=out_planes,
                                              kernel_size=kernel_size, stride=stride,
                                              padding=padding, groups=groups, bias=False, dilation=dilation)
@@ -975,13 +1152,13 @@ class ComposeOperationsGradualTypes(unittest.TestCase):
         new_transformed_c = transform_all_constraints(traced)
         solver = z3.Solver()
         solver.add(new_transformed_c)
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
 
 
     def test_conv_reshape_add_0_2(self):
         class BasicBlock(torch.nn.Module):
             def __init__(self, in_planes, out_planes, kernel_size, stride, padding, groups, dilation):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.conv1 = torch.nn.Conv2d(in_channels=in_planes, out_channels=out_planes,
                                              kernel_size=kernel_size, stride=stride,
                                              padding=padding, groups=groups, bias=False, dilation=dilation)
@@ -1000,7 +1177,7 @@ class ComposeOperationsGradualTypes(unittest.TestCase):
         new_transformed_c = transform_all_constraints(traced)
         solver = z3.Solver()
         solver.add(new_transformed_c)
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
 
 
         conv_result = z3.Const(4, tensor_type)
@@ -1020,9 +1197,9 @@ class ComposeOperationsGradualTypes(unittest.TestCase):
         assert solver.model()[s4].as_long() == res[3]
 
         solver.add(input_2 == tensor_type.tensor2(D(1, 4), D(1, 1)))
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
         solver.add(add_result == tensor_type.tensor4(d1, d2, d3, d4))
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
 
         # first dimension could be anything because we have broadcasting
         assert solver.model()[s1] == res[0]
@@ -1033,7 +1210,7 @@ class ComposeOperationsGradualTypes(unittest.TestCase):
     def test_conv_reshape_add_0_3(self):
         class BasicBlock(torch.nn.Module):
             def __init__(self, in_planes, out_planes, kernel_size, stride, padding, groups, dilation):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.conv1 = torch.nn.Conv2d(in_channels=in_planes, out_channels=out_planes,
                                              kernel_size=kernel_size, stride=stride,
                                              padding=padding, groups=groups, bias=False, dilation=dilation)
@@ -1048,13 +1225,13 @@ class ComposeOperationsGradualTypes(unittest.TestCase):
         new_transformed_c = transform_all_constraints(traced)
         solver = z3.Solver()
         solver.add(new_transformed_c)
-        self.assertEquals(solver.check(), z3.unsat)
+        self.assertEqual(solver.check(), z3.unsat)
 
 
     def test_conv_reshape_add_1(self):
         class BasicBlock(torch.nn.Module):
             def __init__(self, in_planes, out_planes, kernel_size, stride, padding, groups, dilation):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.conv1 = torch.nn.Conv2d(in_channels=in_planes, out_channels=out_planes,
                                              kernel_size=kernel_size, stride=stride,
                                              padding=padding, groups=groups, bias=False, dilation=dilation)
@@ -1069,7 +1246,7 @@ class ComposeOperationsGradualTypes(unittest.TestCase):
         new_transformed_c = transform_all_constraints(traced)
         solver = z3.Solver()
         solver.add(new_transformed_c)
-        self.assertEquals(solver.check(), z3.unsat)
+        self.assertEqual(solver.check(), z3.unsat)
 
 
 class GradualTypes(unittest.TestCase):
@@ -1077,7 +1254,7 @@ class GradualTypes(unittest.TestCase):
 
         class BasicBlock(torch.nn.Module):
             def __init__(self, in_planes, out_planes, kernel_size, stride, padding, groups, dilation):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.conv1 = torch.nn.Conv2d(in_channels=in_planes, out_channels=out_planes,
                                              kernel_size=kernel_size, stride=stride,
                                              padding=padding, groups=groups, bias=False, dilation=dilation)
@@ -1092,12 +1269,12 @@ class GradualTypes(unittest.TestCase):
         new_transformed_c = transform_all_constraints(traced)
         solver = z3.Solver()
         solver.add(new_transformed_c)
-        self.assertEquals(solver.check(), z3.unsat)
+        self.assertEqual(solver.check(), z3.unsat)
 
     def test_conv_reshape0(self):
         class BasicBlock(torch.nn.Module):
             def __init__(self, in_planes, out_planes, kernel_size, stride, padding, groups, dilation):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.conv1 = torch.nn.Conv2d(in_channels=in_planes, out_channels=out_planes,
                                              kernel_size=kernel_size, stride=stride,
                                              padding=padding, groups=groups, bias=False, dilation=dilation)
@@ -1114,7 +1291,7 @@ class GradualTypes(unittest.TestCase):
 
         solver = z3.Solver()
         solver.add(new_transformed_c)
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
         conv_result = z3.Const(3, tensor_type)
 
         s1, s2, s3, s4 = z3.Ints('x1 x2 x3 x4')
@@ -1150,7 +1327,7 @@ class GradualTypes(unittest.TestCase):
     def test_conv_reshape1(self):
         class BasicBlock(torch.nn.Module):
             def __init__(self, in_planes, out_planes, kernel_size, stride, padding, groups, dilation):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.conv1 = torch.nn.Conv2d(in_channels=in_planes, out_channels=out_planes,
                                              kernel_size=kernel_size, stride=stride,
                                              padding=padding, groups=groups, bias=False, dilation=dilation)
@@ -1167,7 +1344,7 @@ class GradualTypes(unittest.TestCase):
 
         solver = z3.Solver()
         solver.add(new_transformed_c)
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
         conv_result = z3.Const(3, tensor_type)
 
         s1, s2, s3, s4 = z3.Ints('x1 x2 x3 x4')
@@ -1184,6 +1361,47 @@ class GradualTypes(unittest.TestCase):
 
 
 class TestSingleOperation(unittest.TestCase):
+
+    def test_conv_wrong_example(self):
+        class BasicBlock(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv1 = torch.nn.Conv2d(in_channels=2, out_channels=2,
+                                             kernel_size=2, stride=2,
+                                             padding=2, groups=2, bias=False, dilation=2)
+
+                self.conv2 = torch.nn.Conv2d(in_channels=4, out_channels=2,
+                                             kernel_size=2, stride=2,
+                                             padding=2, groups=2, bias=False, dilation=2)
+
+                self.relu = torch.nn.ReLU(inplace=True)
+
+            def forward(self, x: Dyn):
+                y = self.relu(self.conv1(x))
+                z = self.relu(self.conv2(x))
+                return z
+
+        ast_rewriter = RewritingTracer()
+        graph = ast_rewriter.trace(BasicBlock())
+        traced = GraphModule(ast_rewriter.root, graph, "gm")
+
+        transformed = transform_all_constraints(traced)
+
+        solver3 = z3.Solver()
+        solver3.add(transformed)
+        print(solver3.check())
+        assert solver3.check() == z3.sat
+
+        s1, s2, s3, s4 = z3.Ints('s1 s2 s3 s4')
+        s11, s22, s33, s44 = z3.Ints('s11 s22 s33 s44')
+        d1, d2, d3, d4 = D(s11, s1), D(s22, s2), D(s33, s3), D(s44, s4),
+        x = z3.Const(1, tensor_type)
+        solver3.add(x == tensor_type.tensor4(d1, d2, d3, d4))
+        assert solver3.check() == z3.sat
+
+        solver3.add(s22 != 0)
+        assert solver3.check() == z3.unsat
+
     def test_conv_dyn(self):
 
         s1, s2, s3, s4 = z3.Ints('s1 s2 s3 s4')
@@ -1195,14 +1413,13 @@ class TestSingleOperation(unittest.TestCase):
 
         class BasicBlock(torch.nn.Module):
             def __init__(self, in_planes, out_planes, kernel_size, stride, padding, groups, dilation):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.conv1 = torch.nn.Conv2d(in_channels=in_planes, out_channels=out_planes,
                                              kernel_size=kernel_size, stride=stride,
                                              padding=padding, groups=groups, bias=False, dilation=dilation)
 
             def forward(self, x: Dyn):
                 return self.conv1(x)
-
 
         BasicBlock(2, 2, 2, 2, 2, 2, 2).forward(torch.rand(4, 2, 3, 4))
 
@@ -1231,13 +1448,13 @@ class TestSingleOperation(unittest.TestCase):
         assert solver3.model()[s22].as_long() == 0
 
         solver3.add(s22 != 0)
-        self.assertEquals(solver3.check(), z3.unsat)
+        self.assertEqual(solver3.check(), z3.unsat)
 
         solver2 = z3.Solver()
         solver2.add(transformed)
         assert solver2.check() == z3.sat
         solver2.add(x == tensor_type.tensor3(d1, d2, d3))
-        self.assertEquals(solver2.check(), z3.unsat)
+        self.assertEqual(solver2.check(), z3.unsat)
 
 
     def test_add(self):
@@ -1246,9 +1463,6 @@ class TestSingleOperation(unittest.TestCase):
         d1, d2, d3, d4 = D(s11, s1), D(s22, s2), D(s33, s3), D(s44, s4),
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: Dyn, y: Dyn):
                 return torch.add(x, y)
 
@@ -1260,25 +1474,22 @@ class TestSingleOperation(unittest.TestCase):
 
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         # make the tensor be of size 1
         x = z3.Const(1, tensor_type)
         s.add(x == tensor_type.tensor1(D(1, s11)))
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         y = z3.Const(2, tensor_type)
         s.add(y == tensor_type.tensor1(D(1, s22)))
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         s.add(s11 == 1)  # tensor[1]
         s.add(s22 == 2)  # tensor[2]
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         class BasicBlock2(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock2, self).__init__()
-
             def forward(self, x: TensorType((Dyn,)), y: Dyn):
                 return torch.add(x, y)
 
@@ -1289,22 +1500,19 @@ class TestSingleOperation(unittest.TestCase):
         transformed = transform_all_constraints(traced)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         # make the tensor be of size 1
         x = z3.Const(1, tensor_type)
         s.add(x == tensor_type.tensor1(D(1, s11)))
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         y = z3.Const(2, tensor_type)
         s.add(y == tensor_type.tensor1(D(1, s22)))
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         s.add(s11 == 4)  # tensor[4]
         s.add(s22 == 5)  # tensor[5]
-        self.assertEquals(s.check(), z3.unsat)
+        self.assertEqual(s.check(), z3.unsat)
 
         class BasicBlock3(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock3, self).__init__()
-
             def forward(self, x: TensorType((Dyn,)), y: Dyn):
                 return torch.add(x, y)
 
@@ -1317,15 +1525,12 @@ class TestSingleOperation(unittest.TestCase):
         s.add(transformed)
         x = z3.Const(1, tensor_type)
         s.add(x == tensor_type.tensor2(d1, d2))
-        self.assertEquals(s.check(), z3.unsat)
+        self.assertEqual(s.check(), z3.unsat)
 
     def test_add_padding(self):
         s1, s2, s3, s4 = z3.Ints('s1 s2 s3 s4')
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType((Dyn,)), y: TensorType((Dyn, Dyn))):
                 return torch.add(x, y)
 
@@ -1337,12 +1542,12 @@ class TestSingleOperation(unittest.TestCase):
 
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         x = z3.Const(1, tensor_type)
         s.add(x == tensor_type.tensor1(D(1, s1)))
 
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         # print(s.model())
 
@@ -1350,9 +1555,6 @@ class TestSingleOperation(unittest.TestCase):
         s1, s2, s3, s4 = z3.Ints('s1 s2 s3 s4')
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([Dyn, Dyn]), y: TensorType([Dyn])):
                 return torch.add(x, y)
 
@@ -1364,16 +1566,16 @@ class TestSingleOperation(unittest.TestCase):
 
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         # print(s.model())
 
         x = z3.Const(1, tensor_type)
         s.add(x == tensor_type.tensor2(D(1, s1), D(1, s2)))
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         y = z3.Const(2, tensor_type)
         s.add(y == tensor_type.tensor1(D(0, s3)))
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         add_result = z3.Const(3, tensor_type)
         broadcast_res1, broadcast_res2 = z3.Const(4, tensor_type), z3.Const(5, tensor_type)
@@ -1401,9 +1603,6 @@ class TestSingleOperation(unittest.TestCase):
         s1, s2, s3, s4 = z3.Ints('s1 s2 s3 s4')
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([Dyn, 1]), y: TensorType([Dyn])):
                 return torch.add(x, y)
 
@@ -1416,7 +1615,7 @@ class TestSingleOperation(unittest.TestCase):
         s = z3.Solver()
         s.add(transformed)
         # print(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         x = z3.Const(1, tensor_type)
         y = z3.Const(2, tensor_type)
@@ -1425,7 +1624,7 @@ class TestSingleOperation(unittest.TestCase):
         s.add(x == tensor_type.tensor2(D(0, s1), D(s2, 1)))
         s.add(y == tensor_type.tensor1(D(0, s3)))
 
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         # print(s.model())
 
@@ -1436,9 +1635,6 @@ class TestSingleOperation(unittest.TestCase):
 
     def test_add_padding_4(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([2, 1]), y: TensorType([3])):
                 return torch.add(x, y)
 
@@ -1451,16 +1647,13 @@ class TestSingleOperation(unittest.TestCase):
         s = z3.Solver()
         s.add(transformed)
 
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         add_result = z3.Const(3, tensor_type)
         assert s.model()[add_result] == tensor_type.tensor2(D(1, 2), D(1, 3))
 
     def test_add_padding_5(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([2, 2]), y: TensorType([3])):
                 return torch.add(x, y)
 
@@ -1472,14 +1665,11 @@ class TestSingleOperation(unittest.TestCase):
 
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.unsat)
+        self.assertEqual(s.check(), z3.unsat)
 
     def test_add_size_3(self):
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([Dyn, Dyn, Dyn]), y: TensorType([Dyn, Dyn, Dyn])):
                 return torch.add(x, y)
 
@@ -1491,7 +1681,7 @@ class TestSingleOperation(unittest.TestCase):
 
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         x = z3.Const(1, tensor_type)
         y = z3.Const(2, tensor_type)
@@ -1501,18 +1691,15 @@ class TestSingleOperation(unittest.TestCase):
         s.add(x == tensor_type.tensor3(D(1, s1), D(1, 1), D(1, s2)))
         s.add(y == tensor_type.tensor3(D(1, s3), D(1, s4), D(1, s5)))
 
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         s.add(s2 == 5)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         s.add(s5 == 6)
-        self.assertEquals(s.check(), z3.unsat)
+        self.assertEqual(s.check(), z3.unsat)
 
     def test_add_padding_6(self):
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([Dyn]), y: TensorType([Dyn, Dyn, Dyn])):
                 return torch.add(x, y)
 
@@ -1523,7 +1710,7 @@ class TestSingleOperation(unittest.TestCase):
         transformed = transform_all_constraints(traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         x = z3.Const(1, tensor_type)
         y = z3.Const(2, tensor_type)
@@ -1533,19 +1720,16 @@ class TestSingleOperation(unittest.TestCase):
         s.add(x == tensor_type.tensor1(D(1, s1)))
         s.add(y == tensor_type.tensor3(D(1, s2), D(1, s3), D(1, s4)))
 
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         s.add(s1 == 4)
         s.add(s4 == 5)
 
-        self.assertEquals(s.check(), z3.unsat)
+        self.assertEqual(s.check(), z3.unsat)
 
     def test_add_padding_7(self):
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([Dyn]), y: TensorType([Dyn, Dyn, Dyn, Dyn])):
                 return torch.add(x, y)
 
@@ -1556,19 +1740,16 @@ class TestSingleOperation(unittest.TestCase):
         transformed = transform_all_constraints(traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         x = z3.Const(1, tensor_type)
         s1, s2, s3, s4, s5 = z3.Ints('s1 s2 s3 s4 s5')
         s.add(x == tensor_type.tensor2(D(s1, s2), D(s2, s3)))
-        self.assertEquals(s.check(), z3.unsat)
+        self.assertEqual(s.check(), z3.unsat)
 
 
     def test_add_padding_8(self):
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([Dyn]), y: TensorType([Dyn, Dyn, Dyn, Dyn])):
                 return torch.add(x, y)
 
@@ -1579,7 +1760,7 @@ class TestSingleOperation(unittest.TestCase):
         transformed = transform_all_constraints(traced, counter=0)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         x = z3.Const(1, tensor_type)
         y = z3.Const(2, tensor_type)
 
@@ -1587,17 +1768,14 @@ class TestSingleOperation(unittest.TestCase):
         s.add(x == tensor_type.tensor1(D(s1, 1)))
         s.add(s1 >= 0)
 
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         s.add(y == tensor_type.tensor4(D(0, s2), D(0, s3), D(0, s4), D(0, s5)))
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
     def test_add_padding_9(self):
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: Dyn, y: TensorType([Dyn, Dyn, Dyn, Dyn])):
                 return torch.add(x, y)
 
@@ -1609,21 +1787,21 @@ class TestSingleOperation(unittest.TestCase):
         s = z3.Solver()
         s.add(transformed)
 
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         x = z3.Const(1, tensor_type)
         y = z3.Const(2, tensor_type)
 
         s1, s2, s3, s4, s5, s6, s7 = z3.Ints('s1 s2 s3 s4 s5 s6 s7')
         s.add(x == tensor_type.tensor1(D(s1, s7)))
         s.add(s1 == 1)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         s.add(y == tensor_type.tensor4(D(0, s2), D(0, s3), D(0, s4), D(s6, s5)))
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
 
         s.add(s6 == 1)
 
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         s.add(s5 != 1, s7 != 1)
         assert s.check()
 
@@ -1639,7 +1817,7 @@ class TestSingleOperation(unittest.TestCase):
 
         class BasicBlock(torch.nn.Module):
             def __init__(self, in_planes, out_planes, kernel_size, stride, padding, groups, dilation):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.conv1 = torch.nn.Conv2d(in_channels=in_planes, out_channels=out_planes,
                                              kernel_size=kernel_size, stride=stride,
                                              padding=padding, dilation=dilation)
@@ -1657,14 +1835,14 @@ class TestSingleOperation(unittest.TestCase):
         new_transformed_c = transform_all_constraints(traced)
         solver = z3.Solver()
         solver.add(new_transformed_c)
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
 
         x = z3.Const(1, tensor_type)
         y = z3.Const(2, tensor_type)
 
         solver.add(x == tensor_type.tensor4(d1, d2, d3, d4))
         solver.add(y == tensor_type.tensor4(b1, b2, b3, b4))
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
         # print(solver.model())
         assert solver.model()[e3].as_long() == res[2]
         assert solver.model()[e4].as_long() == res[3]
@@ -1681,7 +1859,7 @@ class TestSingleOperation(unittest.TestCase):
         solver.add(x == tensor_type.tensor4(d1, d2, d3, d4))
         solver.add(y == tensor_type.tensor4(b1, b2, b3, b4))
 
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
         assert solver.model()[e3].as_long() == res2[2]
         assert solver.model()[e4].as_long() == res2[3]
 
@@ -1689,9 +1867,6 @@ class TestSingleOperation(unittest.TestCase):
         s11, s22, s33, s44 = z3.Ints('s11 s22 s33 s44')
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: Dyn):
                 return torch.reshape(x, (2, -1))
 
@@ -1702,14 +1877,14 @@ class TestSingleOperation(unittest.TestCase):
         transformed = transform_all_constraints(traced)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         x = z3.Const(1, tensor_type)
         s.add(x == tensor_type.tensor1(D(1, s11)))
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         s.add(z3.Or([s11 == 2, s11 == 4, s11 == 9]))
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         s.add(s11 == 9)
-        self.assertEquals(s.check(), z3.unsat)
+        self.assertEqual(s.check(), z3.unsat)
 
 
     def test_reshape_annotated(self):
@@ -1718,9 +1893,6 @@ class TestSingleOperation(unittest.TestCase):
         d1, d2, d3, d4 = D(s11, s1), D(s22, s2), D(s33, s3), D(s44, s4),
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([Dyn])):
                 return torch.reshape(x, (2, -1))
 
@@ -1730,18 +1902,15 @@ class TestSingleOperation(unittest.TestCase):
         transformed = transform_all_constraints(traced)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         x = z3.Const(1, tensor_type)
         s.add(x == tensor_type.tensor2(d1, d2))
-        self.assertEquals(s.check(), z3.unsat)
+        self.assertEqual(s.check(), z3.unsat)
 
     def test_reshape_static_target(self):
         s11, s22, s33, s44 = z3.Ints('s11 s22 s33 s44')
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: TensorType([Dyn])):
                 return torch.reshape(x, (2, 3))
 
@@ -1752,21 +1921,18 @@ class TestSingleOperation(unittest.TestCase):
         # print(transformed)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         x = z3.Const(1, tensor_type)
         s.add(x == tensor_type.tensor1(D(1, s11)))
         s.check()
         assert s.model()[s11].as_long() == 6
         s.add(s11 != 6)
-        self.assertEquals(s.check(), z3.unsat)
+        self.assertEqual(s.check(), z3.unsat)
 
     def test_reshape_static_target2(self):
         s11, s22, s33, s44 = z3.Ints('s11 s22 s33 s44')
 
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: Dyn):
                 return torch.reshape(x, (2, 3, 1, 1))
 
@@ -1776,19 +1942,19 @@ class TestSingleOperation(unittest.TestCase):
         transformed = transform_all_constraints(traced)
         s = z3.Solver()
         s.add(transformed)
-        self.assertEquals(s.check(), z3.sat)
+        self.assertEqual(s.check(), z3.sat)
         x = z3.Const(1, tensor_type)
         s.add(x == tensor_type.tensor1(D(1, s11)))
         s.check()
         assert s.model()[s11].as_long() == 6
         s.add(s11 != 6)
-        self.assertEquals(s.check(), z3.unsat)
+        self.assertEqual(s.check(), z3.unsat)
 
 
     def test_conv2D_maxpool2d_flatten(self):
         class BasicBlock(torch.nn.Module):
             def __init__(self):
-                super(BasicBlock, self).__init__()
+                super().__init__()
 
                 self.conv1 = torch.nn.Conv2d(3, 6, 5)
                 self.pool = torch.nn.MaxPool2d(2, 2)
@@ -1825,7 +1991,7 @@ class TestSingleOperation(unittest.TestCase):
     def test_conv2D_maxpool2d_flatten_unsat(self):
         class BasicBlock(torch.nn.Module):
             def __init__(self):
-                super(BasicBlock, self).__init__()
+                super().__init__()
 
                 self.conv1 = torch.nn.Conv2d(3, 6, 5)
                 self.pool = torch.nn.MaxPool2d(2, 2)
@@ -1853,12 +2019,12 @@ class TestSingleOperation(unittest.TestCase):
         solver.check()
         input = z3.Const(1, tensor_type)
         solver.add(input == tensor_type.tensor4(D(1, 4), D(1, 3), D(1, 32), D(1, 45)))
-        self.assertEquals(solver.check(), z3.unsat)
+        self.assertEqual(solver.check(), z3.unsat)
 
     def test_conv2D_maxpool2d_flatten_dyn(self):
         class BasicBlock(torch.nn.Module):
             def __init__(self):
-                super(BasicBlock, self).__init__()
+                super().__init__()
 
                 self.conv1 = torch.nn.Conv2d(3, 6, 5)
                 self.pool = torch.nn.MaxPool2d(2, 2)
@@ -1883,7 +2049,7 @@ class TestSingleOperation(unittest.TestCase):
         constraints = transform_all_constraints(traced, counter=0)
         solver = z3.Solver()
         solver.add(constraints)
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
 
     def test_type_check_flatten(self):
         s1, s2, s3, s4 = z3.Ints('s1 s2 s3 s4')
@@ -1897,7 +2063,7 @@ class TestSingleOperation(unittest.TestCase):
         constraints = transform_all_constraints(symbolic_traced, counter=0)
         solver = z3.Solver()
         solver.add(constraints)
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
         flatten = z3.Const(2, tensor_type)
 
         res = M().forward(torch.rand(2, 3, 4, 5)).size()
@@ -1913,12 +2079,12 @@ class TestSingleOperation(unittest.TestCase):
         constraints = transform_all_constraints(symbolic_traced, counter=0)
         solver = z3.Solver()
         solver.add(constraints)
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
         x = z3.Const(1, tensor_type)
         y = z3.Const(2, tensor_type)
 
         solver.add(x == tensor_type.tensor4(D(1, 2), D(1, 3), D(0, s1), D(1, 5)))
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
         assert solver.model()[y].arg(1).arg(0) == 0
 
 
@@ -1932,15 +2098,12 @@ class TestSingleOperation(unittest.TestCase):
         constraints = transform_all_constraints(symbolic_traced, counter=0)
         solver = z3.Solver()
         solver.add(constraints)
-        self.assertEquals(solver.check(), z3.unsat)
+        self.assertEqual(solver.check(), z3.unsat)
 
 class ConstraintGeneration(unittest.TestCase):
 
     def test_add_reshape(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self):
-                super(BasicBlock, self).__init__()
-
             def forward(self, x: Dyn, y: Dyn):
                 return torch.add(torch.reshape(x, (1, 2)), torch.reshape(y, (2, 2)))
 
@@ -1956,7 +2119,7 @@ class ConstraintGeneration(unittest.TestCase):
     def test_conv_reshape_add(self):
         class BasicBlock(torch.nn.Module):
             def __init__(self, in_planes, out_planes, kernel_size, stride, padding, groups, dilation):
-                super(BasicBlock, self).__init__()
+                super().__init__()
                 self.conv1 = torch.nn.Conv2d(in_channels=in_planes, out_channels=out_planes,
                                              kernel_size=kernel_size, stride=stride,
                                              padding=padding, groups=groups, bias=False, dilation=dilation)
@@ -2019,7 +2182,7 @@ class TestResNet(unittest.TestCase):
         input = z3.Const(1, tensor_type)
         # input with 3 dimensions
         solver.add(input == tensor_type.tensor3(D(1, 1), D(1, 3), D(1, 224)))
-        self.assertEquals(solver.check(), z3.unsat)
+        self.assertEqual(solver.check(), z3.unsat)
 
 
 
@@ -2033,12 +2196,12 @@ class TestResNet(unittest.TestCase):
         constraints = transform_all_constraints(traced, counter=0)
         solver = z3.Solver()
         solver.add(constraints)
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
         linear = z3.Const(650, tensor_type)
 
         input = z3.Const(1, tensor_type)
         solver.add(input == tensor_type.tensor4(D(1, 1), D(1, 3), D(1, 224), D(1, 224)))
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
         assert solver.model()[linear] == tensor_type.tensor2(D(1, res[0]), D(1, res[1]))
 
     def test_resnet502(self):
@@ -2070,9 +2233,9 @@ class TestResNet(unittest.TestCase):
         batch, d1, d2 = z3.Ints('b d1 d2')
         solver.add(input == tensor_type.tensor4(D(1, batch), D(1, 3), D(1, 224), D(1, 224)))
         solver.add(linear == tensor_type.tensor2(D(1, d1), D(1, d2)))
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
         solver.add(batch != d1)
-        self.assertEquals(solver.check(), z3.unsat)
+        self.assertEqual(solver.check(), z3.unsat)
 
 @skipIfNoTorchVision
 class TestAlexNet(unittest.TestCase):
@@ -2090,11 +2253,11 @@ class TestAlexNet(unittest.TestCase):
         constraints = transform_all_constraints(symbolic_traced, counter=0)
         solver = z3.Solver()
         solver.add(constraints)
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
         input = z3.Const(1, tensor_type)
         conv = z3.Const(2, tensor_type)
         solver.add(input == tensor_type.tensor4(D(1, 10), D(1, 3), D(1, 227), D(1, 227)))
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
         assert solver.model()[conv] == tensor_type.tensor4(D(1, 10), D(1, 64), D(1, 56), D(1, 56))
 
         relu = z3.Const(7, tensor_type)
@@ -2127,7 +2290,7 @@ class TestAlexNet(unittest.TestCase):
         constraints = transform_all_constraints(symbolic_traced, counter=0)
         solver = z3.Solver()
         solver.add(constraints)
-        self.assertEquals(solver.check(), z3.unsat)
+        self.assertEqual(solver.check(), z3.unsat)
 
     def test_alexnet3(self):
         alexnet = models.alexnet()
@@ -2140,7 +2303,7 @@ class TestAlexNet(unittest.TestCase):
         constraints = transform_all_constraints(symbolic_traced, counter=0)
         solver = z3.Solver()
         solver.add(constraints)
-        self.assertEquals(solver.check(), z3.sat)
+        self.assertEqual(solver.check(), z3.sat)
 
     def test_alexnet4(self):
         alexnet = models.alexnet()
@@ -2153,7 +2316,7 @@ class TestAlexNet(unittest.TestCase):
         constraints = transform_all_constraints(symbolic_traced, counter=0)
         solver = z3.Solver()
         solver.add(constraints)
-        self.assertEquals(solver.check(), z3.unsat)
+        self.assertEqual(solver.check(), z3.unsat)
 
 
 

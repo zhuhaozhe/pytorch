@@ -1,17 +1,27 @@
-#include <ATen/ATen.h>
-#include <ATen/AccumulateType.h>
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/core/Tensor.h>
 #include <ATen/Dispatch.h>
 #include <ATen/Parallel.h>
 #include <ATen/TensorUtils.h>
-#include <ATen/core/grad_mode.h>
 #include <ATen/div_rtn.h>
 #include <ATen/native/ConvUtils.h>
 #include <ATen/native/CPUBlas.h>
 #include <ATen/native/Unfold2d.h>
 #include <c10/util/irange.h>
 
-namespace at {
-namespace native {
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/_slow_conv2d_backward_native.h>
+#include <ATen/ops/_slow_conv2d_forward.h>
+#include <ATen/ops/_slow_conv2d_forward_native.h>
+#include <ATen/ops/empty.h>
+#include <ATen/ops/sum.h>
+#include <ATen/ops/thnn_conv2d_native.h>
+#endif
+
+namespace at::native {
 
 namespace {
 
@@ -19,7 +29,8 @@ static Tensor compute_columns2d(
     const Tensor& input,
     IntArrayRef padding,
     IntArrayRef stride,
-    IntArrayRef kernel_size) {
+    IntArrayRef kernel_size,
+    bool is_channels_last) {
   const int64_t kernel_height = kernel_size[0];
   const int64_t kernel_width = kernel_size[1];
   const int64_t pad_height = padding[0];
@@ -32,8 +43,6 @@ static Tensor compute_columns2d(
   const int64_t input_width = input.size(3);
   const int64_t output_height = (input_height + 2 * pad_height - kernel_height) / stride_height + 1;
   const int64_t output_width =  (input_width + 2 * pad_width - kernel_width) / stride_width + 1;
-
-  bool is_channels_last = input.suggest_memory_format() == at::MemoryFormat::ChannelsLast;
 
   Tensor columns;
   if ((kernel_height == 1) && (stride_height == 1) && (pad_height == 0) &&
@@ -51,7 +60,7 @@ static Tensor compute_columns2d(
     int64_t col = is_channels_last ?
         kernel_height * kernel_width * n_input_plane : output_height * output_width;
     columns = at::empty({batch_size, row, col}, input.options());
-    AT_DISPATCH_ALL_TYPES_AND(kBFloat16, input.scalar_type(), "slow_conv2d_cpu", [&]{
+    AT_DISPATCH_ALL_TYPES_AND2(kBFloat16, kHalf, input.scalar_type(), "slow_conv2d_cpu", [&]{
       auto input_a = input.accessor<scalar_t, 4>();
       auto columns_a = columns.accessor<scalar_t, 3>();
 
@@ -394,8 +403,8 @@ void slow_conv2d_backward_out_cpu_template(
   grad_input.zero_();
   TORCH_CHECK(grad_input.is_contiguous(memory_format), "slow_conv2d: grad_input must be contiguous");
 
-  AT_DISPATCH_FLOATING_TYPES_AND(
-      kBFloat16, input.scalar_type(), "slow_conv2d_cpu_grad_input", [&] {
+  AT_DISPATCH_FLOATING_TYPES_AND2(
+      kBFloat16, kHalf, input.scalar_type(), "slow_conv2d_cpu_grad_input", [&] {
     auto grad_output_a = grad_output.accessor<scalar_t, 4>();
     auto grad_input_a = grad_input.accessor<scalar_t, 4>();
     auto weight_a = weight.accessor<scalar_t, 2>();
@@ -504,12 +513,12 @@ static void slow_conv2d_backward_weight_out_cpu_template(
       true);
 
   auto grad_output = grad_output_.contiguous(memory_format);
-  Tensor finput = compute_columns2d(input, padding, stride, kernel_size);
+  Tensor finput = compute_columns2d(input, padding, stride, kernel_size, use_channels_last);
 
   const int64_t batch_size = input.size(0);
 
-  AT_DISPATCH_FLOATING_TYPES_AND(
-      kBFloat16, input.scalar_type(), "slow_conv2d_cpu_grad_weight", [&] {
+  AT_DISPATCH_FLOATING_TYPES_AND2(
+      kBFloat16, kHalf, input.scalar_type(), "slow_conv2d_cpu_grad_weight", [&] {
     auto grad_output_a = grad_output.accessor<scalar_t, 4>();
     auto grad_weight_2d_a = grad_weight_2d.accessor<scalar_t, 2>();
     auto finput_a = finput.accessor<scalar_t, 3>();
@@ -571,14 +580,14 @@ Tensor& slow_conv2d_forward_out_cpu(
   const int64_t output_height = (input_height + 2 * pad_height - kernel_height) / stride_height + 1;
   const int64_t output_width = (input_width + 2 * pad_width - kernel_width) / stride_width + 1;
 
-  Tensor finput = compute_columns2d(input, padding, stride, kernel_size);
+  Tensor finput = compute_columns2d(input, padding, stride, kernel_size, use_channels_last);
   output.resize_({batch_size, n_output_plane, output_height, output_width}, memory_format);
   if (bias.defined()) {
     output.copy_(bias.reshape({-1, 1, 1}));
   }
   TORCH_CHECK(output.is_contiguous(memory_format), "slow_conv2d output tensor must be contiguous");
 
-  AT_DISPATCH_ALL_TYPES_AND(kBFloat16, input.scalar_type(), "slow_conv2d_cpu", [&]{
+  AT_DISPATCH_ALL_TYPES_AND2(kBFloat16, kHalf, input.scalar_type(), "slow_conv2d_cpu", [&]{
     auto input_a = input.accessor<scalar_t, 4>();
     auto output_a = output.accessor<scalar_t, 4>();
     auto finput_a = finput.accessor<scalar_t, 3>();
@@ -733,5 +742,4 @@ Tensor thnn_conv2d(const Tensor & self, const Tensor & weight, IntArrayRef kerne
   return at::_slow_conv2d_forward(self, weight, kernel_size, bias, stride, padding);
 }
 
-} // namespace native
-} // namespace at
+} // namespace at::native

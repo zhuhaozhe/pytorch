@@ -4,6 +4,23 @@
 
 namespace c10 {
 
+DataPtr Allocator::clone(const void* data, std::size_t n) const {
+  DataPtr new_data = allocate(n);
+  copy_data(new_data.mutable_get(), data, n);
+  return new_data;
+}
+
+void Allocator::default_copy_data(
+    void* dest,
+    const void* src,
+    std::size_t count) const {
+  std::memcpy(dest, src, count);
+}
+
+bool Allocator::is_simple_data_ptr(const DataPtr& data_ptr) const {
+  return data_ptr.get() == data_ptr.get_context();
+}
+
 static void deleteInefficientStdFunctionContext(void* ptr) {
   delete static_cast<InefficientStdFunctionContext*>(ptr);
 }
@@ -46,8 +63,8 @@ bool memoryProfilingEnabled() {
 void reportMemoryUsageToProfiler(
     void* ptr,
     int64_t alloc_size,
-    int64_t total_allocated,
-    int64_t total_reserved,
+    size_t total_allocated,
+    size_t total_reserved,
     Device device) {
   auto* reporter_ptr = static_cast<MemoryReportingInfoBase*>(
       ThreadLocalDebugInfo::get(DebugInfoKind::PROFILER_STATE));
@@ -57,6 +74,25 @@ void reportMemoryUsageToProfiler(
   }
 }
 
+void reportOutOfMemoryToProfiler(
+    int64_t alloc_size,
+    size_t total_allocated,
+    size_t total_reserved,
+    Device device) {
+  auto* reporter_ptr = static_cast<MemoryReportingInfoBase*>(
+      ThreadLocalDebugInfo::get(DebugInfoKind::PROFILER_STATE));
+  if (reporter_ptr) {
+    reporter_ptr->reportOutOfMemory(
+        alloc_size, total_allocated, total_reserved, device);
+  }
+}
+
 MemoryReportingInfoBase::MemoryReportingInfoBase() = default;
+
+void MemoryReportingInfoBase::reportOutOfMemory(
+    int64_t /*alloc_size*/,
+    size_t /*total_allocated*/,
+    size_t /*total_reserved*/,
+    Device /*device*/) {}
 
 } // namespace c10

@@ -3,8 +3,10 @@
 
 #include <ATen/ArrayRef.h>
 #include <ATen/FunctionalStorageImpl.h>
+#include <ATen/core/IListRef.h>
 #include <ATen/core/List.h>
-#include <ATen/core/boxing/KernelFunction.h>
+#include <ATen/core/boxing/BoxedKernel.h>
+#include <ATen/core/boxing/impl/boxing.h>
 #include <ATen/core/dispatch/Dispatcher.h>
 
 #include <c10/core/DispatchKey.h>
@@ -69,6 +71,29 @@ struct TORCH_API FunctionalTensorWrapper : public c10::TensorImpl {
   void set_level(int64_t level) {
     level_ = level;
   }
+  bool has_metadata_mutation() const {
+    return has_metadata_mutation_;
+  };
+
+  // Denotes a mutation that's hidden from autograd,
+  // e.g. for the purposes of passing a tensor to a triton kernel
+  void mark_mutation_hidden_from_autograd() {
+    mutation_hidden_from_autograd_counter_++;
+  }
+  void mark_mutation_during_no_grad_or_inference_mode() {
+    mutation_during_no_grad_or_inference_mode_++;
+  }
+  // Are all the mutations happening to the tensor hidden from autograd
+  bool are_all_mutations_hidden_from_autograd() const {
+    return mutation_hidden_from_autograd_counter_ == mutation_counter_;
+  }
+  // Did all mutations happen under no_grad or inference_mode
+  // (We also need to ignore mutations fully hidden from autograd here)
+  bool are_all_mutations_under_no_grad_or_inference_mode() const {
+    return mutation_hidden_from_autograd_counter_ +
+        mutation_during_no_grad_or_inference_mode_ ==
+        mutation_counter_;
+  }
 
   // Sync's the underlying tensor with its alias, if it's out of date. This
   // involves two steps: 1) Apply any pending updates/mutations to the alias 2)
@@ -98,12 +123,26 @@ struct TORCH_API FunctionalTensorWrapper : public c10::TensorImpl {
   // used to determine if it's up-to-date with its alias. The act of syncing a
   // tensor will set a tensor's generation equal to its alias's generation.
   bool is_up_to_date() const;
+  // Freezes the storage of this tensor, preventing subsequent mutations
+  void freeze_storage() const;
   // Every FunctionalTensorWrapper contains a vector<ViewMeta> objects
   // describing the series of view ops that ran to generate the current tensor
   // from the base tensor. This method is used by inplace-view ops like
   // transpose_. It appends a ViewMeta to the existing stack, and refreshes the
   // tensor by replaying the views off of the alias.
   void mutate_view_meta(at::functionalization::ViewMeta meta);
+
+  // Custom implementation of self.set_(src)
+  void set__impl(const FunctionalTensorWrapper* other);
+
+  // Returns whether the current tensor's data was ever mutated
+  bool has_data_mutation();
+  //
+  // Returns whether the current FunctionalTensorWrapper
+  // experienced a set_() call.
+  bool was_storage_changed() {
+    return was_storage_changed_;
+  }
 
   // The functionalization pass can be used to remove mutations.
   // It does so by replacing any mutation op with it's corresponding
@@ -119,8 +158,19 @@ struct TORCH_API FunctionalTensorWrapper : public c10::TensorImpl {
   // replace_() swaps out the wrapped tensor, value_, with tmp.
   void replace_(const Tensor& other);
 
+  bool is_multi_output_view() {
+    return is_multi_output_view_;
+  }
+
   // See Note[resize_() in functionalization pass]
   void maybe_replace_storage(const Tensor& other);
+
+  // Replaces the storage with a new functional storage,
+  // and clears the view_metas_ stack.
+  // WARNING: Calling this function will sever the aliasing relationship between
+  // the current FunctionalTensorWrapper and any of its outstanding aliases.
+  // Please only call if you know what you're doing.
+  void _unsafe_reset_storage();
 
   c10::intrusive_ptr<TensorImpl> shallow_copy_and_detach(
       const c10::VariableVersion& version_counter,
@@ -133,15 +183,18 @@ struct TORCH_API FunctionalTensorWrapper : public c10::TensorImpl {
   ~FunctionalTensorWrapper() override = default;
 
   // FunctionalTensorWrapper overrides all custom size/stride function,
-  // so that if the inner tensor has a custo implementation
+  // so that if the inner tensor has a custom implementation
   // we make sure to call that implementation.
   at::IntArrayRef sizes_custom() const override;
   at::IntArrayRef strides_custom() const override;
   int64_t dim_custom() const override;
   int64_t numel_custom() const override;
   bool is_contiguous_custom(at::MemoryFormat memory_format) const override;
-  c10::SymIntArrayRef sym_sizes() const override;
   c10::SymIntArrayRef sym_sizes_custom() const override;
+  c10::SymInt sym_size_custom(int64_t d) const override;
+  c10::SymIntArrayRef sym_strides_custom() const override;
+  c10::SymInt sym_storage_offset_custom() const override;
+  c10::Device device_custom() const override;
 
  private:
   const char* tensorimpl_type_name() const override;
@@ -162,6 +215,18 @@ struct TORCH_API FunctionalTensorWrapper : public c10::TensorImpl {
   // change the value tensor that it points to over time.
   Tensor value_;
   int64_t level_;
+  // These two counters are used for identifying
+  // whether all the mutations on a given tensor are hidden from autograd or
+  // not. If we have an input mutation that is hidden from autograd, then once
+  // we convert the input mutation to a copy_() we know it will be safe to hide
+  // the copy_() from autograd as well.
+  uint64_t mutation_counter_ = 0;
+  uint64_t mutation_hidden_from_autograd_counter_ = 0;
+  uint64_t mutation_during_no_grad_or_inference_mode_ = 0;
+  bool has_metadata_mutation_ = false;
+  bool is_multi_output_view_ = false;
+  // Did the tensor experience a set_() call.
+  bool was_storage_changed_ = false;
 
   size_t generation_ = 0;
   std::vector<at::functionalization::ViewMeta> view_metas_;
@@ -182,44 +247,60 @@ TORCH_API inline FunctionalTensorWrapper* unsafeGetFunctionalWrapper(
 
 TORCH_API bool isFunctionalTensor(const at::Tensor& tensor);
 TORCH_API bool isFunctionalTensor(const c10::optional<Tensor>& t);
-TORCH_API bool isFunctionalTensor(const c10::List<Tensor>& t_list);
 TORCH_API bool isFunctionalTensor(
     const c10::List<c10::optional<Tensor>>& t_list);
-TORCH_API bool isFunctionalTensor(const c10::ArrayRef<Tensor> t_list);
+TORCH_API bool isFunctionalTensor(ITensorListRef list);
 
 TORCH_API Tensor to_functional_tensor(const Tensor& tensor);
 TORCH_API c10::optional<Tensor> to_functional_tensor(
     const c10::optional<Tensor>& tensor);
-TORCH_API c10::List<Tensor> to_functional_tensor(
-    const c10::List<Tensor>& t_list);
 TORCH_API c10::List<c10::optional<Tensor>> to_functional_tensor(
     const c10::List<c10::optional<Tensor>>& t_list);
-TORCH_API std::vector<Tensor> to_functional_tensor(
-    const std::vector<Tensor>& t_list);
-TORCH_API std::vector<Tensor> to_functional_tensor(const TensorList& t_list);
+TORCH_API std::vector<Tensor> to_functional_tensor(ITensorListRef t_list);
+
+TORCH_API void freeze_functional_tensor(const Tensor& tensor);
 
 TORCH_API Tensor
 from_functional_tensor(const Tensor& tensor, bool assert_functional = true);
 TORCH_API c10::optional<Tensor> from_functional_tensor(
     const c10::optional<Tensor>& t,
     bool assert_functional = true);
-TORCH_API c10::List<Tensor> from_functional_tensor(
-    const c10::List<Tensor>& t_list);
 TORCH_API c10::List<c10::optional<Tensor>> from_functional_tensor(
     const c10::List<c10::optional<Tensor>>& t_list);
-TORCH_API std::vector<Tensor> from_functional_tensor(const TensorList& tensors);
+TORCH_API std::vector<Tensor> from_functional_tensor(ITensorListRef t_list);
 
 TORCH_API void sync(const at::Tensor& t);
 TORCH_API void sync(const c10::optional<Tensor>& t);
-TORCH_API void sync(const c10::List<Tensor> t_list);
-TORCH_API void sync(const at::TensorList t_list);
-TORCH_API void sync(const c10::List<c10::optional<Tensor>> t_list);
+TORCH_API void sync(const c10::List<c10::optional<Tensor>>& t_list);
+TORCH_API void sync(ITensorListRef t_list);
 
 TORCH_API void replace_(const Tensor& functional_tensor, const Tensor& other);
-TORCH_API void replace_(const TensorList functional_tensor, TensorList other);
+TORCH_API void replace_(
+    const ITensorListRef functional_tensor,
+    ITensorListRef other);
 
 TORCH_API void commit_update(const Tensor& functional_tensor);
-TORCH_API void commit_update(const TensorList functional_tensor);
+TORCH_API void commit_update(ITensorListRef functional_tensor);
+
+TORCH_API void unsafe_reset_storage(const Tensor& functional_tensor);
+
+TORCH_API void mark_mutation_hidden_from_autograd(
+    const Tensor& functional_tensor);
+
+TORCH_API bool are_all_mutations_hidden_from_autograd(
+    const Tensor& functional_tensor);
+
+TORCH_API bool are_all_mutations_under_no_grad_or_inference_mode(
+    const Tensor& functional_tensor);
+
+// These two methods are XLA-specific logic and are no-ops
+// for the normal functionalization flow.
+TORCH_API void propagate_xla_data(
+    const Tensor& functional_tensor,
+    const Tensor& other);
+TORCH_API void propagate_xla_data(
+    const ITensorListRef functional_tensor,
+    ITensorListRef other);
 
 Tensor create_functional_tensor_with_view_meta(
     const Tensor& view_to_wrap,
@@ -227,11 +308,7 @@ Tensor create_functional_tensor_with_view_meta(
     functionalization::ViewMeta meta,
     int64_t out_idx = 0);
 std::vector<Tensor> create_functional_tensor_with_view_meta(
-    const c10::List<Tensor>& view_to_wrap,
-    const Tensor& base,
-    functionalization::ViewMeta meta);
-std::vector<Tensor> create_functional_tensor_with_view_meta(
-    const std::vector<Tensor>& view_to_wrap,
+    ITensorListRef view_to_wrap,
     const Tensor& base,
     functionalization::ViewMeta meta);
 
@@ -249,8 +326,8 @@ TORCH_API void setFunctionalizationReapplyViewsTLS(bool reapply_views);
 
 class TORCH_API FunctionalizationReapplyViewsGuard {
  public:
-  FunctionalizationReapplyViewsGuard(bool reapply_views) {
-    prev_ = getFunctionalizationReapplyViewsTLS();
+  FunctionalizationReapplyViewsGuard(bool reapply_views)
+      : prev_(getFunctionalizationReapplyViewsTLS()) {
     setFunctionalizationReapplyViewsTLS(reapply_views);
   }
 
@@ -279,20 +356,22 @@ TORCH_API void functionalize_op_helper(
     const c10::OperatorHandle& op,
     torch::jit::Stack* stack);
 
-template <class Op, class ReturnType, class... ParameterTypes>
+template <class Op, bool symint, class ReturnType, class... ParameterTypes>
 struct _functionalize_aten_op final {};
 
-template <class Op, class ReturnType, class... ParameterTypes>
-struct _functionalize_aten_op<Op, ReturnType(ParameterTypes...)> final {
-  static ReturnType call(ParameterTypes... args) {
+template <class Op, bool symint, class ReturnType, class... ParameterTypes>
+struct _functionalize_aten_op<Op, symint, ReturnType(ParameterTypes...)> final {
+  static ReturnType call(
+      typename c10::maybe_keep_symint<symint, ParameterTypes>::type... args) {
+    using FuncType = ReturnType(
+        typename c10::maybe_keep_symint<symint, ParameterTypes>::type...);
     auto op = c10::Dispatcher::singleton()
                   .findSchemaOrThrow(
                       (const char*)Op::name, (const char*)Op::overload_name)
-                  .typed<ReturnType(ParameterTypes...)>();
+                  .typed<FuncType>();
 
-    return c10::impl::BoxedKernelWrapper<ReturnType(ParameterTypes...)>::call(
-        c10::KernelFunction::make_boxed_function<functionalize_op_helper>,
-        nullptr,
+    return c10::impl::BoxedKernelWrapper<FuncType>::call(
+        c10::BoxedKernel::makeFromFunction<functionalize_op_helper>(),
         op,
         // BoxedKernelWrapper knows to ignore this keyset argument,
         // because functionalize_op_helper doesn't take in a DispatchKeySet
@@ -302,7 +381,12 @@ struct _functionalize_aten_op<Op, ReturnType(ParameterTypes...)> final {
 };
 
 template <class Op>
-using functionalize_aten_op = _functionalize_aten_op<Op, typename Op::schema>;
+using functionalize_aten_op =
+    _functionalize_aten_op<Op, false, typename Op::schema>;
+
+template <class Op>
+using functionalize_aten_op_symint =
+    _functionalize_aten_op<Op, true, typename Op::schema>;
 
 } // namespace functionalization
 } // namespace at

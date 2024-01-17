@@ -3,7 +3,6 @@ To run this file by hand from the root of the PyTorch
 repository, run:
 
 python -m tools.autograd.gen_autograd \
-       build/aten/src/ATen/Declarations.yaml \
        aten/src/ATen/native/native_functions.yaml \
        aten/src/ATen/native/tags.yaml \
        $OUTPUT_DIR \
@@ -56,20 +55,18 @@ def gen_autograd(
     disable_autograd: bool = False,
 ) -> None:
     # Parse and load derivatives.yaml
-    differentiability_infos = load_derivatives(
+    differentiability_infos, used_dispatch_keys = load_derivatives(
         os.path.join(autograd_dir, "derivatives.yaml"), native_functions_path, tags_path
     )
 
     template_path = os.path.join(autograd_dir, "templates")
 
     native_funcs = parse_native_yaml(native_functions_path, tags_path).native_functions
-    fns = list(
-        sorted(
-            filter(
-                operator_selector.is_native_function_selected_for_training, native_funcs
-            ),
-            key=lambda f: cpp.name(f.func),
-        )
+    fns = sorted(
+        filter(
+            operator_selector.is_native_function_selected_for_training, native_funcs
+        ),
+        key=lambda f: cpp.name(f.func),
     )
     fns_with_diff_infos: List[
         NativeFunctionWithDifferentiabilityInfo
@@ -78,7 +75,12 @@ def gen_autograd(
     # Generate VariableType.h/cpp
     if not disable_autograd:
         gen_variable_type(
-            out, native_functions_path, tags_path, fns_with_diff_infos, template_path
+            out,
+            native_functions_path,
+            tags_path,
+            fns_with_diff_infos,
+            template_path,
+            used_dispatch_keys,
         )
 
         gen_inplace_or_view_type(
@@ -100,7 +102,7 @@ def gen_autograd_python(
     out: str,
     autograd_dir: str,
 ) -> None:
-    differentiability_infos = load_derivatives(
+    differentiability_infos, _ = load_derivatives(
         os.path.join(autograd_dir, "derivatives.yaml"), native_functions_path, tags_path
     )
 

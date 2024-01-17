@@ -5,8 +5,7 @@
 #include <torch/csrc/Export.h>
 #include <torch/csrc/jit/ir/ir.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 TORCH_API c10::optional<std::shared_ptr<Graph>> GetDecomposition(
     const FunctionSchema& schema);
@@ -25,5 +24,10 @@ TORCH_API Function* GetDecompositionExecutor(const char* schema_literal);
 
 TORCH_API Function* GetDecompositionExecutor(const FunctionSchema& schema);
 
-} // namespace jit
-} // namespace torch
+TORCH_API void run_jit_decomposition(
+    const c10::OperatorHandle& op,
+    torch::jit::Stack* stack);
+
+TORCH_API bool has_jit_decomposition(const FunctionSchema& schema);
+
+} // namespace torch::jit

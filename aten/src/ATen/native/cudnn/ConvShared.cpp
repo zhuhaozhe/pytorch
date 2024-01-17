@@ -1,11 +1,29 @@
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/core/Tensor.h>
-#include <ATen/cuda/CUDAConfig.h>  // for the definition of AT_CUDNN_ENABLED
+#include <ATen/Context.h>
 #include <ATen/cuda/EmptyTensor.h>
+#include <ATen/TensorGeometry.h>
+#include <ATen/TensorUtils.h>
+#include <ATen/cuda/CUDAConfig.h>
 #include <ATen/native/ConvUtils.h>
 
 #if AT_CUDNN_ENABLED()
 
 #include <ATen/native/cudnn/ConvShared.h>
+
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/cudnn_convolution_add_relu_native.h>
+#include <ATen/ops/cudnn_convolution_native.h>
+#include <ATen/ops/cudnn_convolution_relu_native.h>
+#include <ATen/ops/cudnn_convolution_transpose_native.h>
+#include <ATen/ops/empty.h>
+#include <ATen/ops/empty_like.h>
+#include <ATen/ops/zeros.h>
+#include <ATen/ops/zeros_like.h>
+#endif
 
 // NOTE [cuDNN API version]
 //
@@ -159,64 +177,146 @@ std::string repro_from_args(const ConvolutionParams& params) {
 //
 // ---------------------------------------------------------------------
 
-Tensor cudnn_convolution_forward(
+void cudnn_convolution_forward_out(
+    TensorArg& output,
     CheckedFrom c,
-    const TensorArg& input, const TensorArg& weight,
-    IntArrayRef padding, IntArrayRef stride, IntArrayRef dilation, int64_t groups,
-    bool benchmark, bool deterministic, bool allow_tf32)
-{
+    const TensorArg& input,
+    const TensorArg& weight,
+    IntArrayRef padding,
+    IntArrayRef stride,
+    IntArrayRef dilation,
+    int64_t groups,
+    bool benchmark,
+    bool deterministic,
+    bool allow_tf32) {
   checkAllSameType(c, {input, weight});
   checkAllSameGPU(c, {input, weight});
 
-  auto memory_format = cudnn_conv_suggest_memory_format(*input, *weight);
-  Tensor output_t = at::detail::empty_cuda(
-      conv_output_size(input->sizes(), weight->sizes(),
-                       padding, stride, dilation),
-      input->options().memory_format(memory_format));
-
-  if (output_t.numel() == 0) {
-    return output_t;
-  }
-
-  // Avoid ambiguity of "output" when this is being used as backwards
-  TensorArg output{ output_t, "result", 0 };
-  convolution_shape_check(c, input, weight, output, padding, stride, dilation, groups);
+  auto memory_format = output->suggest_memory_format();
+  convolution_shape_check(
+      c, input, weight, output, padding, stride, dilation, groups);
 
   Tensor weight_contig = weight->contiguous(memory_format);
   Tensor input_contig = input->contiguous(memory_format);
 
   raw_cudnn_convolution_forward_out(
-      *output, input_contig, weight_contig,
-      padding, stride, dilation, groups, benchmark, deterministic, allow_tf32);
-
-  return *output;
+      *output,
+      input_contig,
+      weight_contig,
+      padding,
+      stride,
+      dilation,
+      groups,
+      benchmark,
+      deterministic,
+      allow_tf32);
 }
 
 Tensor cudnn_convolution(
-    const Tensor& input_t, const Tensor& weight_t,
-    IntArrayRef padding, IntArrayRef stride, IntArrayRef dilation,
-    int64_t groups, bool benchmark, bool deterministic, bool allow_tf32)
-{
-  TensorArg input  { input_t,  "input",  1 },
-            weight { weight_t, "weight", 2 };
+    const Tensor& input_t,
+    const Tensor& weight_t,
+    IntArrayRef padding,
+    IntArrayRef stride,
+    IntArrayRef dilation,
+    int64_t groups,
+    bool benchmark,
+    bool deterministic,
+    bool allow_tf32) {
+  TensorArg input{input_t, "input", 1}, weight{weight_t, "weight", 2};
   CheckedFrom c = "cudnn_convolution";
-  auto output_t = cudnn_convolution_forward(
-    c, input, weight, padding, stride, dilation, groups, benchmark, deterministic, allow_tf32);
+  auto memory_format = cudnn_conv_suggest_memory_format(input_t, weight_t);
+  Tensor output_t = at::detail::empty_cuda(
+      conv_output_size(
+          input_t.sizes(), weight_t.sizes(), padding, stride, dilation),
+      input->options().memory_format(memory_format));
+  if (output_t.numel() == 0) {
+    return output_t;
+  }
+  // Avoid ambiguity of "output" when this is being used as backwards
+  TensorArg output{output_t, "result", 0};
+  cudnn_convolution_forward_out(
+      output,
+      c,
+      input,
+      weight,
+      padding,
+      stride,
+      dilation,
+      groups,
+      benchmark,
+      deterministic,
+      allow_tf32);
+  return *output;
+}
+at::Tensor& cudnn_convolution_out(
+    const Tensor& input_t,
+    const Tensor& weight_t,
+    IntArrayRef padding,
+    IntArrayRef stride,
+    IntArrayRef dilation,
+    int64_t groups,
+    bool benchmark,
+    bool deterministic,
+    bool allow_tf32,
+    Tensor& output_t) {
+  TensorArg input{input_t, "input", 1}, weight{weight_t, "weight", 2};
+  CheckedFrom c = "cudnn_convolution";
+  if (output_t.numel() == 0) {
+    return output_t;
+  }
+  TensorArg output{output_t, "result", 0};
+  cudnn_convolution_forward_out(
+      output,
+      c,
+      input,
+      weight,
+      padding,
+      stride,
+      dilation,
+      groups,
+      benchmark,
+      deterministic,
+      allow_tf32);
   return output_t;
 }
 
-// NB: output_padding not needed here, as there is no ambiguity to
-// resolve
+// NB: output_padding not needed here, as there is no ambiguity to resolve
 Tensor cudnn_convolution_transpose_backward_input(
-    const Tensor& grad_output_t, const Tensor& weight_t,
-    IntArrayRef padding, IntArrayRef stride, IntArrayRef dilation,
-    int64_t groups, bool benchmark, bool deterministic, bool allow_tf32)
-{
-  TensorArg grad_output { grad_output_t,  "grad_output", 1 },
-            weight      { weight_t, "weight", 2 };
-  return cudnn_convolution_forward(
-    "cudnn_convolution_transpose_backward_input",
-    grad_output, weight, padding, stride, dilation, groups, benchmark, deterministic, allow_tf32);
+    const Tensor& grad_output_t,
+    const Tensor& weight_t,
+    IntArrayRef padding,
+    IntArrayRef stride,
+    IntArrayRef dilation,
+    int64_t groups,
+    bool benchmark,
+    bool deterministic,
+    bool allow_tf32) {
+  TensorArg grad_output{grad_output_t, "grad_output", 1},
+      weight{weight_t, "weight", 2};
+  auto memory_format =
+      cudnn_conv_suggest_memory_format(grad_output_t, weight_t);
+  Tensor output_t = at::detail::empty_cuda(
+      conv_output_size(
+          grad_output_t.sizes(), weight_t.sizes(), padding, stride, dilation),
+      grad_output_t.options().memory_format(memory_format));
+
+  if (output_t.numel() == 0) {
+    return output_t;
+  }
+  TensorArg output{output_t, "result", 0};
+  cudnn_convolution_forward_out(
+      output,
+      "cudnn_convolution_transpose_backward_input",
+      grad_output,
+      weight,
+      padding,
+      stride,
+      dilation,
+      groups,
+      benchmark,
+      deterministic,
+      allow_tf32);
+  return *output;
 }
 
 // ---------------------------------------------------------------------
@@ -357,7 +457,7 @@ std::tuple<at::Tensor,at::Tensor> cudnn_convolution_backward(
     IntArrayRef padding, IntArrayRef stride, IntArrayRef dilation, int64_t groups,
     bool benchmark, bool deterministic, bool allow_tf32, std::array<bool,2> output_mask) {
 
-  Tensor grad_output = grad_output_t.contiguous(input.suggest_memory_format());
+  Tensor grad_output = grad_output_t.to(input.suggest_memory_format());
 
   Tensor grad_input, grad_weight;
   if (input.numel() == 0) {
@@ -436,7 +536,7 @@ Tensor cudnn_convolution_relu(
   bool allow_tf32 = ctx.allowTF32CuDNN();
   auto _bias = bias_t.has_value()
           ? bias_t.value()
-          : at::native::zeros(
+          : at::zeros(
                 {output_t.size(1)},
                 optTypeMetaToScalarType(output_t.options().dtype_opt()),
                 output_t.options().layout_opt(),
@@ -514,7 +614,7 @@ Tensor cudnn_convolution_add_relu(
   auto _alpha = alpha.has_value() ? alpha.value().to<float>() : 1.0;
   auto _bias = bias_t.has_value()
           ? bias_t.value()
-          : at::native::zeros(
+          : at::zeros(
                 {output_t.size(1)},
                 optTypeMetaToScalarType(output_t.options().dtype_opt()),
                 output_t.options().layout_opt(),

@@ -1,12 +1,17 @@
-from typing import Callable
+from typing import Callable, Optional
+
+from torch._prims.context import TorchRefsMode
 
 from torch.fx import GraphModule
-from torch.fx.experimental.proxy_tensor import make_fx
-from torch._prims.context import TorchRefsMode
-from torch._prims.nvfuser_executor import nvfuser_execute
+from torch.fx.experimental.proxy_tensor import make_fx, wrapper_and_args_for_make_fx
 
 
-def execute(gm: GraphModule, *args, executor: str = "aten"):
+def execute(
+    gm: GraphModule,
+    *args,
+    executor: str = "aten",
+    executor_parameters: Optional[dict] = None,
+):
     """
     Prototype ATen executor.
 
@@ -15,12 +20,8 @@ def execute(gm: GraphModule, *args, executor: str = "aten"):
 
     if executor == "aten":
         return gm.forward(*args)
-    elif executor == "nvfuser":
-        return nvfuser_execute(gm, *args)
 
-    msg = "Received unexpected value for 'executor': {0}. Allowed values are: aten, nvfuser.".format(
-        executor
-    )
+    msg = f"Received unexpected value for 'executor': {executor}. Allowed values are: aten."
     raise ValueError(msg)
 
 
@@ -45,25 +46,14 @@ def make_traced(fn: Callable):
 
     a = torch.randn((1, 2, 3, 4, 5), device='cuda')
     b = torch.randn((1, 2, 3, 4, 5), device='cuda')
-    result = traced_foo(a, b, executor='nvfuser')
-
-    Executor may be either 'aten' or 'nvfuser'.
+    result = traced_foo(a, b, executor='aten')
     """
 
     def _traced(*args, executor="aten", **kwargs):
         # TODO: caching
-        nargs = len(args)
-        fn_kwargs = kwargs
-        flat_fn_kwargs = list(fn_kwargs.values())
-        all_args = list(args) + flat_fn_kwargs
+        wrapped, all_args = wrapper_and_args_for_make_fx(fn, args, kwargs)
 
-        def wrapped(args):
-            fn_args = args[:nargs]
-            kwargs_keys = list(fn_kwargs.keys())
-            kwargs = dict(zip(kwargs_keys, args[nargs:]))
-            return fn(*fn_args, **kwargs)
-
-        with TorchRefsMode.push():
+        with TorchRefsMode():
             gm = make_fx(wrapped)(all_args)
         return execute(gm, all_args, executor=executor)
 

@@ -1,5 +1,6 @@
 #include <torch/csrc/jit/jit_log.h>
 #include <torch/csrc/jit/passes/onnx/helper.h>
+#include <torch/csrc/onnx/back_compat.h>
 
 #include <ATen/ScalarOps.h>
 
@@ -88,8 +89,16 @@ c10::optional<at::ScalarType> ONNXTypeToATenType(int32_t onnx_type) {
       return at::kComplexDouble;
     case ::ONNX_NAMESPACE::TensorProto_DataType_BFLOAT16:
       return at::kBFloat16;
+    case ::torch::onnx::TensorProto_DataType_FLOAT8E5M2:
+      return at::kFloat8_e5m2;
+    case ::torch::onnx::TensorProto_DataType_FLOAT8E4M3FN:
+      return at::kFloat8_e4m3fn;
     default:
-      TORCH_CHECK(false, "unexpected tensor scalar type");
+      TORCH_CHECK(
+          false,
+          "ONNX type ",
+          onnx_type,
+          " is an unexpected tensor scalar type");
   }
   return c10::optional<at::ScalarType>{};
 }
@@ -135,7 +144,11 @@ namespace {
     case at::kQInt32:
       return ::ONNX_NAMESPACE::TensorProto_DataType_INT32;
     default:
-      AT_ERROR("unexpected tensor scalar type");
+      TORCH_CHECK(
+          false,
+          "ScalarType ",
+          toString(at_type),
+          " is an unexpected tensor scalar type");
   }
 }
 } // namespace
@@ -173,7 +186,7 @@ Node* createONNXConstant(
     at::Tensor value) {
   Node* constant_node = graph->create(onnx::Constant, 1);
   constant_node->insertBefore(n_to_insert_before);
-  constant_node->t_(attr::value, value);
+  constant_node->t_(attr::value, std::move(value));
   return constant_node;
 }
 
@@ -237,7 +250,7 @@ void ONNXLintGraph(
       GRAPH_DEBUG("Node does not set sourceRange:", *n);
       n_miss_source_range.emplace_back(n->kind());
     }
-    if (n->scopeName() == "") {
+    if (n->scopeName().empty()) {
       GRAPH_DEBUG("Node does not set scope:", *n);
       n_miss_scope.emplace_back(n->kind());
     }

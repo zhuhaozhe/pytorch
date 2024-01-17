@@ -1,4 +1,5 @@
 /// This file contains tensor-agnostic SoboleEngine constants
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/native/SobolEngineOpsUtils.h>
 
 /*
@@ -41,9 +42,7 @@ is present in the working directory). For additional details see [1].
     poly = np.concatenate([[1], df["poly"].values])
 */
 
-namespace at {
-namespace native {
-namespace sobol_utils {
+namespace at::native::sobol_utils {
 
 /// All definitions below this point are data. These are constant, and should
 /// not be modified without notice
@@ -42457,6 +42456,4 @@ const int64_t initsobolstate[21201][18] = {
     {1, 1, 7, 11, 15, 7, 37, 239, 337, 245, 1557, 3681, 7357, 9639, 27367, 26869, 114603, 86317}
     };
 
-} // namespace sobol_utils
-} // namespace native
-} // namespace at
+} // namespace at::native::sobol_utils

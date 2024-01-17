@@ -18,8 +18,7 @@
 #include <ATen/ops/empty_like.h>
 #endif
 
-namespace at {
-namespace native {
+namespace at::native {
 
 using namespace at::cuda::detail;
 
@@ -94,7 +93,7 @@ __global__ void max_unpooling2d_backward_kernel(
 
 template <typename T>
 __global__ void max_unpooling3d_backward_kernel(
-    T* gradOutputData,
+    const T* gradOutputData,
     int64_t oT,
     int64_t oH,
     int64_t oW,
@@ -118,6 +117,10 @@ Tensor& max_unpooling2d_forward_out_cuda(const Tensor& self_,
     const Tensor& indices_,
     IntArrayRef output_size,
     Tensor& output) {
+  // See Note [Writing Nondeterministic Operations]
+  // Nondeterministic with duplicate indices
+  at::globalContext().alertNotDeterministic("max_unpooling2d_forward_out");
+
   TORCH_CHECK(output.is_contiguous(), "output must be contiguous");
   TORCH_CHECK(
       indices_.scalar_type() == at::ScalarType::Long,
@@ -144,7 +147,7 @@ Tensor& max_unpooling2d_forward_out_cuda(const Tensor& self_,
       "Expected shape of indices to be: ", self_.sizes(), " but got: ", indices_.sizes());
   TORCH_CHECK(
       output_size.size() == 2,
-      "There should be exactly two elements (width, height) in output_size, but got ", output_size.size(), " elements.");
+      "There should be exactly two elements (height, width) in output_size, but got ", output_size.size(), " elements.");
 
   int64_t dimw = 2;
   int64_t dimh = 1;
@@ -180,14 +183,14 @@ Tensor& max_unpooling2d_forward_out_cuda(const Tensor& self_,
               0,
               at::cuda::getCurrentCUDAStream()>>>(
               self.numel(),
-              self.data_ptr<scalar_t>(),
-              indices.data_ptr<int64_t>(),
+              self.const_data_ptr<scalar_t>(),
+              indices.const_data_ptr<int64_t>(),
               numChannels,
               inputHeight,
               inputWidth,
               oheight,
               owidth,
-              output.data_ptr<scalar_t>());
+              output.mutable_data_ptr<scalar_t>());
           C10_CUDA_KERNEL_LAUNCH_CHECK();
         }));
   }
@@ -291,6 +294,10 @@ Tensor& max_unpooling3d_forward_out_cuda(const Tensor& self_,
     IntArrayRef stride,
     IntArrayRef padding,
     Tensor& output) {
+  // See Note [Writing Nondeterministic Operations]
+  // Nondeterministic with duplicate indices
+  at::globalContext().alertNotDeterministic("max_unpooling3d_forward_out");
+
   TORCH_CHECK(output.is_contiguous(), "output must be contiguous");
   max_unpooling3d_shape_check(
     self_, Tensor(), indices_, output_size, stride, padding, "max_unpooling3d_forward_out_cuda()");
@@ -365,7 +372,7 @@ Tensor& max_unpooling3d_forward_out_cuda(const Tensor& self_,
               at::cuda::getCurrentCUDAStream()>>>(
               self.packed_accessor64<scalar_t, 4>(),
               indices.packed_accessor64<int64_t, 4>(),
-              output.data_ptr<scalar_t>(),
+              output.mutable_data_ptr<scalar_t>(),
               oT,
               oH,
               oW,
@@ -467,14 +474,14 @@ at::Tensor& max_unpooling2d_backward_out_cuda(const Tensor& grad_output_,
             0,
             at::cuda::getCurrentCUDAStream()>>>(
             count,
-            grad_output.data_ptr<scalar_t>(),
-            indices.data_ptr<int64_t>(),
+            grad_output.const_data_ptr<scalar_t>(),
+            indices.const_data_ptr<int64_t>(),
             nInputPlane,
             nInputRows,
             nInputCols,
             oheight,
             owidth,
-            grad_input.data_ptr<scalar_t>());
+            grad_input.mutable_data_ptr<scalar_t>());
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       }));
   return grad_input;
@@ -574,7 +581,7 @@ at::Tensor& max_unpooling3d_backward_out_cuda(const Tensor& grad_output_,
               block,
               0,
               at::cuda::getCurrentCUDAStream()>>>(
-              grad_output.data_ptr<scalar_t>(),
+              grad_output.const_data_ptr<scalar_t>(),
               oT,
               oH,
               oW,
@@ -602,5 +609,4 @@ at::Tensor max_unpooling3d_backward_cuda(
   return grad_input;
 }
 
-} // namespace native
-} // namespace at
+} // namespace at::native

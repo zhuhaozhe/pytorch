@@ -49,6 +49,7 @@ class DistributedSampler(Sampler[T_co]):
 
     Example::
 
+        >>> # xdoctest: +SKIP
         >>> sampler = DistributedSampler(dataset) if is_distributed else None
         >>> loader = DataLoader(dataset, shuffle=(sampler is None),
         ...                     sampler=sampler)
@@ -71,8 +72,7 @@ class DistributedSampler(Sampler[T_co]):
             rank = dist.get_rank()
         if rank >= num_replicas or rank < 0:
             raise ValueError(
-                "Invalid rank {}, rank should be in the interval"
-                " [0, {}]".format(rank, num_replicas - 1))
+                f"Invalid rank {rank}, rank should be in the interval [0, {num_replicas - 1}]")
         self.dataset = dataset
         self.num_replicas = num_replicas
         self.rank = rank
@@ -125,7 +125,9 @@ class DistributedSampler(Sampler[T_co]):
 
     def set_epoch(self, epoch: int) -> None:
         r"""
-        Sets the epoch for this sampler. When :attr:`shuffle=True`, this ensures all replicas
+        Set the epoch for this sampler.
+
+        When :attr:`shuffle=True`, this ensures all replicas
         use a different random ordering for each epoch. Otherwise, the next iteration of this
         sampler will yield the same ordering.
 

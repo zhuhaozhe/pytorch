@@ -1,12 +1,17 @@
+r"""This package adds support for NVIDIA Tools Extension (NVTX) used in profiling."""
+
 from contextlib import contextmanager
 
 try:
     from torch._C import _nvtx
 except ImportError:
-    class _NVTXStub(object):
+
+    class _NVTXStub:
         @staticmethod
         def _fail(*args, **kwargs):
-            raise RuntimeError("NVTX functions not installed. Are you sure you have a CUDA build?")
+            raise RuntimeError(
+                "NVTX functions not installed. Are you sure you have a CUDA build?"
+            )
 
         rangePushA = _fail
         rangePop = _fail
@@ -19,20 +24,16 @@ __all__ = ["range_push", "range_pop", "range_start", "range_end", "mark", "range
 
 def range_push(msg):
     """
-    Pushes a range onto a stack of nested range span.  Returns zero-based
-    depth of the range that is started.
+    Push a range onto a stack of nested range span.  Returns zero-based depth of the range that is started.
 
     Args:
-        msg (string): ASCII message to associate with range
+        msg (str): ASCII message to associate with range
     """
     return _nvtx.rangePushA(msg)
 
 
 def range_pop():
-    """
-    Pops a range off of a stack of nested range spans.  Returns the
-    zero-based depth of the range that is ended.
-    """
+    """Pop a range off of a stack of nested range spans.  Returns the  zero-based depth of the range that is ended."""
     return _nvtx.rangePop()
 
 
@@ -48,7 +49,7 @@ def range_start(msg) -> int:
     Returns: A range handle (uint64_t) that can be passed to range_end().
 
     Args:
-        msg (string): ASCII message to associate with the range.
+        msg (str): ASCII message to associate with the range.
     """
     return _nvtx.rangeStartA(msg)
 
@@ -68,7 +69,7 @@ def mark(msg):
     Describe an instantaneous event that occurred at some point.
 
     Args:
-        msg (string): ASCII message to associate with the event.
+        msg (str): ASCII message to associate with the event.
     """
     return _nvtx.markA(msg)
 
@@ -81,8 +82,10 @@ def range(msg, *args, **kwargs):
     they are passed as arguments to msg.format().
 
     Args:
-        msg (string): message to associate with the range
+        msg (str): message to associate with the range
     """
     range_push(msg.format(*args, **kwargs))
-    yield
-    range_pop()
+    try:
+        yield
+    finally:
+        range_pop()

@@ -1,17 +1,15 @@
-# coding=utf-8
 
-import copy
 import functools
 from typing import List
 
 import torch
 import torch.distributed._shard.sharding_spec as shard_spec
-from torch.distributed._shard.partial_tensor import _PartialTensor
 
 from .api import (
     _CUSTOM_SHARDED_OPS,
     _SHARDED_OPS,
     Shard,
+    ShardedTensorBase,
     ShardedTensor,
     ShardedTensorMetadata,
     TensorProperties,
@@ -41,7 +39,7 @@ def empty(sharding_spec: shard_spec.ShardingSpec,
 
     Keyword args:
         dtype (:class:`torch.dtype`, optional): the desired data type of returned tensor.
-            Default: if ``None``, uses a global default (see :func:`torch.set_default_tensor_type`).
+            Default: if ``None``, uses a global default (see :func:`torch.set_default_dtype`).
         layout (:class:`torch.layout`, optional): the desired layout of returned Tensor.
             Default: ``torch.strided``.
         requires_grad (bool, optional): If autograd should record operations on the
@@ -93,7 +91,7 @@ def ones(sharding_spec: shard_spec.ShardingSpec,
 
     Keyword args:
         dtype (:class:`torch.dtype`, optional): the desired data type of returned tensor.
-            Default: if ``None``, uses a global default (see :func:`torch.set_default_tensor_type`).
+            Default: if ``None``, uses a global default (see :func:`torch.set_default_dtype`).
         layout (:class:`torch.layout`, optional): the desired layout of returned Tensor.
             Default: ``torch.strided``.
         requires_grad (bool, optional): If autograd should record operations on the
@@ -144,7 +142,7 @@ def zeros(sharding_spec: shard_spec.ShardingSpec,
 
     Keyword args:
         dtype (:class:`torch.dtype`, optional): the desired data type of returned tensor.
-            Default: if ``None``, uses a global default (see :func:`torch.set_default_tensor_type`).
+            Default: if ``None``, uses a global default (see :func:`torch.set_default_dtype`).
         layout (:class:`torch.layout`, optional): the desired layout of returned Tensor.
             Default: ``torch.strided``.
         requires_grad (bool, optional): If autograd should record operations on the
@@ -197,7 +195,7 @@ def full(sharding_spec: shard_spec.ShardingSpec,
         fill_value (Scalar) – the value to fill the output tensor with.
     Keyword args:
         dtype (:class:`torch.dtype`, optional): the desired data type of returned tensor.
-            Default: if ``None``, uses a global default (see :func:`torch.set_default_tensor_type`).
+            Default: if ``None``, uses a global default (see :func:`torch.set_default_dtype`).
         layout (:class:`torch.layout`, optional): the desired layout of returned Tensor.
             Default: ``torch.strided``.
         requires_grad (bool, optional): If autograd should record operations on the
@@ -249,7 +247,7 @@ def rand(sharding_spec: shard_spec.ShardingSpec,
 
     Keyword args:
         dtype (:class:`torch.dtype`, optional): the desired data type of returned tensor.
-            Default: if ``None``, uses a global default (see :func:`torch.set_default_tensor_type`).
+            Default: if ``None``, uses a global default (see :func:`torch.set_default_dtype`).
         layout (:class:`torch.layout`, optional): the desired layout of returned Tensor.
             Default: ``torch.strided``.
         requires_grad (bool, optional): If autograd should record operations on the
@@ -303,7 +301,7 @@ def randn(sharding_spec: shard_spec.ShardingSpec,
 
     Keyword args:
         dtype (:class:`torch.dtype`, optional): the desired data type of returned tensor.
-            Default: if ``None``, uses a global default (see :func:`torch.set_default_tensor_type`).
+            Default: if ``None``, uses a global default (see :func:`torch.set_default_dtype`).
         layout (:class:`torch.layout`, optional): the desired layout of returned Tensor.
             Default: ``torch.strided``.
         requires_grad (bool, optional): If autograd should record operations on the
@@ -362,22 +360,24 @@ def init_from_local_shards(
 
 
     Examples:
-      Suppose we want construct a sharded tensor on two ranks, global size = (10, 5),
-      each shard have a (5, 5) local tensor, we can do it like below:
+        Suppose we want construct a sharded tensor on two ranks, global size = (10, 5),
+        each shard have a (5, 5) local tensor, we can do it like below:
 
-      on rank 0:
+        on rank 0:
+        >>> # xdoctest: +SKIP("not distributed")
         >>> local_shard_metadata = ShardMetadata(
-        >>>     shard_offsets=[0, 0]
-        >>>     shard_lengths=[5, 5]
+        >>>     shard_offsets=[0, 0],
+        >>>     shard_lengths=[5, 5],
         >>>     placement="rank:0/cuda:0"
         >>> )
         >>> local_shards = [Shard(torch.randn(5, 5), local_shard_metadata)]
         >>> sharded_tensor = init_from_local_shards(local_shards, [10, 5])
 
-      on rank 1:
+        on rank 1:
+        >>> # xdoctest: +SKIP("not distributed")
         >>> local_shard_metadata = ShardMetadata(
-        >>>     shard_offsets=[5, 0]
-        >>>     shard_lengths=[5, 5]
+        >>>     shard_offsets=[5, 0],
+        >>>     shard_lengths=[5, 5],
         >>>     placement="rank:1/cuda:1"
         >>> )
         >>> local_shards = [Shard(torch.randn(5, 5), local_shard_metadata)]
@@ -408,7 +408,7 @@ def pre_load_state_dict_hook(module, state_dict, prefix, local_metadata, strict,
     Pre-load state dict hook to add ShardedTensor to the module.
     """
     for submodule_name, submodule in module.named_modules():
-        for attr_name, attr in submodule.__dict__.items():
+        for attr_name in submodule.__dict__.keys():
             mod_prefix = prefix + submodule_name
             key = mod_prefix + ('.' if mod_prefix else '') + attr_name
             if key in state_dict:
@@ -424,10 +424,11 @@ def custom_sharded_op_impl(func):
     parameters, the function provided will be invoked for that operator.
 
     Example::
+        >>> # xdoctest: +SKIP
         >>> @custom_sharded_op_impl(torch.nn.functional.linear)
         >>> def my_custom_sharded_linear(types, args, kwargs, process_group):
-        >>>   ....
-        >>>
+        >>>     ...
+        >>> # xdoctest: +SKIP("Undefined variables")
         >>> input = torch.rand(10, 32)
         >>> weight = sharded_tensor.rand(32, 16)
         >>> bias = torch.rand(16)

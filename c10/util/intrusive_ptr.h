@@ -1,13 +1,10 @@
 #pragma once
 
-#include <c10/util/C++17.h>
 #include <c10/util/Exception.h>
-#include <c10/util/ExclusivelyOwned.h>
 #include <c10/util/MaybeOwned.h>
 #include <atomic>
 #include <climits>
 #include <memory>
-#include <stdexcept>
 
 namespace pybind11 {
 template <typename, typename...>
@@ -23,9 +20,6 @@ inline void incref(intrusive_ptr_target* self);
 namespace intrusive_ptr {
 inline void incref(intrusive_ptr_target* self);
 }
-
-template <typename TTarget>
-struct ExclusivelyOwnedTraits;
 
 // constructor tag used by intrusive_ptr constructors
 struct DontIncreaseRefcount {};
@@ -56,6 +50,7 @@ struct DontIncreaseRefcount {};
 // tells us if the object was allocated by us.  If it wasn't, no
 // intrusive_ptr for you!
 
+// NOLINTNEXTLINE(cppcoreguidelines-virtual-class-destructor)
 class C10_API intrusive_ptr_target {
   // Note [Weak references for intrusive refcounting]
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -92,7 +87,7 @@ class C10_API intrusive_ptr_target {
       intrusive_ptr_target* self);
 
   template <typename T>
-  friend struct ExclusivelyOwnedTraits;
+  friend struct ExclusivelyOwnedTensorTraits;
 
  protected:
   // protected destructor. We never want to destruct intrusive_ptr_target*
@@ -236,20 +231,20 @@ class intrusive_ptr final {
   // This static_assert triggers on MSVC
   //  error C2131: expression did not evaluate to a constant
   static_assert(
+      // NOLINTNEXTLINE(misc-redundant-expression)
       NullType::singleton() == NullType::singleton(),
       "NullType must have a constexpr singleton() method");
 #endif
   static_assert(
-      std::is_base_of<
+      std::is_base_of_v<
           TTarget,
-          typename std::remove_pointer<decltype(NullType::singleton())>::type>::
-          value,
+          std::remove_pointer_t<decltype(NullType::singleton())>>,
       "NullType::singleton() must return a element_type* pointer");
 
   TTarget* target_;
 
   template <typename T>
-  friend struct ExclusivelyOwnedTraits;
+  friend struct ExclusivelyOwnedTensorTraits;
   template <class TTarget2, class NullType2>
   friend class intrusive_ptr;
   friend class weak_intrusive_ptr<TTarget, NullType>;
@@ -329,6 +324,9 @@ class intrusive_ptr final {
   intrusive_ptr() noexcept
       : intrusive_ptr(NullType::singleton(), raw::DontIncreaseRefcount{}) {}
 
+  intrusive_ptr(std::nullptr_t) noexcept
+      : intrusive_ptr(NullType::singleton(), raw::DontIncreaseRefcount{}) {}
+
   // This constructor will not increase the ref counter for you.
   // We use the tagged dispatch mechanism to explicitly mark this constructor
   // to not increase the refcount
@@ -343,6 +341,7 @@ class intrusive_ptr final {
   }
 
   template <class From, class FromNullType>
+  // NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
   /* implicit */ intrusive_ptr(intrusive_ptr<From, FromNullType>&& rhs) noexcept
       : target_(
             detail::assign_ptr_<TTarget, NullType, FromNullType>(rhs.target_)) {
@@ -371,7 +370,8 @@ class intrusive_ptr final {
   }
 
   intrusive_ptr& operator=(intrusive_ptr&& rhs) & noexcept {
-    return operator=<TTarget, NullType>(std::move(rhs));
+    // NOLINTNEXTLINE(*assign*)
+    return operator= <TTarget, NullType>(std::move(rhs));
   }
 
   template <class From, class FromNullType>
@@ -385,11 +385,16 @@ class intrusive_ptr final {
   }
 
   intrusive_ptr& operator=(const intrusive_ptr& rhs) & noexcept {
-    return operator=<TTarget, NullType>(rhs);
+    if (this == &rhs) {
+      return *this;
+    }
+    // NOLINTNEXTLINE(*assign-operator, *assignment-signature)
+    return operator= <TTarget, NullType>(rhs);
   }
 
   template <class From, class FromNullType>
-  intrusive_ptr& operator=(const intrusive_ptr<From, NullType>& rhs) & {
+  intrusive_ptr& operator=(
+      const intrusive_ptr<From, NullType>& rhs) & noexcept {
     static_assert(
         std::is_convertible<From*, TTarget*>::value,
         "Type mismatch. intrusive_ptr copy assignment got pointer of wrong type.");
@@ -407,7 +412,6 @@ class intrusive_ptr final {
   }
 
   TTarget* operator->() const noexcept {
-    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete)
     return target_;
   }
 
@@ -421,9 +425,7 @@ class intrusive_ptr final {
   }
 
   void swap(intrusive_ptr& rhs) noexcept {
-    TTarget* tmp = target_;
-    target_ = rhs.target_;
-    rhs.target_ = tmp;
+    std::swap(target_, rhs.target_);
   }
 
   // We do a lot of null-pointer checks in our code, good to have this be cheap.
@@ -470,6 +472,10 @@ class intrusive_ptr final {
    * passed in *must* have been created using intrusive_ptr::release().
    */
   static intrusive_ptr reclaim(TTarget* owning_ptr) {
+    TORCH_INTERNAL_ASSERT_DEBUG_ONLY(
+        owning_ptr == NullType::singleton() ||
+            owning_ptr->refcount_.load() == 0 || owning_ptr->weakcount_.load(),
+        "TTarget violates the invariant that refcount > 0  =>  weakcount > 0");
     return intrusive_ptr(owning_ptr, raw::DontIncreaseRefcount{});
   }
 
@@ -667,7 +673,7 @@ template <
 class weak_intrusive_ptr final {
  private:
   static_assert(
-      std::is_base_of<intrusive_ptr_target, TTarget>::value,
+      std::is_base_of_v<intrusive_ptr_target, TTarget>,
       "intrusive_ptr can only be used for classes that inherit from intrusive_ptr_target.");
 #ifndef _WIN32
   // This static_assert triggers on MSVC
@@ -677,10 +683,9 @@ class weak_intrusive_ptr final {
       "NullType must have a constexpr singleton() method");
 #endif
   static_assert(
-      std::is_base_of<
+      std::is_base_of_v<
           TTarget,
-          typename std::remove_pointer<decltype(NullType::singleton())>::type>::
-          value,
+          std::remove_pointer_t<decltype(NullType::singleton())>>,
       "NullType::singleton() must return a element_type* pointer");
 
   TTarget* target_;
@@ -723,6 +728,7 @@ class weak_intrusive_ptr final {
 
   template <class From, class FromNullType>
   /* implicit */ weak_intrusive_ptr(
+      // NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
       weak_intrusive_ptr<From, FromNullType>&& rhs) noexcept
       : target_(
             detail::assign_ptr_<TTarget, NullType, FromNullType>(rhs.target_)) {
@@ -752,7 +758,8 @@ class weak_intrusive_ptr final {
   }
 
   weak_intrusive_ptr& operator=(weak_intrusive_ptr&& rhs) & noexcept {
-    return operator=<TTarget, NullType>(std::move(rhs));
+    // NOLINTNEXTLINE(*assign*)
+    return operator= <TTarget, NullType>(std::move(rhs));
   }
 
   template <class From, class FromNullType>
@@ -767,7 +774,11 @@ class weak_intrusive_ptr final {
   }
 
   weak_intrusive_ptr& operator=(const weak_intrusive_ptr& rhs) & noexcept {
-    return operator=<TTarget, NullType>(rhs);
+    if (this == &rhs) {
+      return *this;
+    }
+    // NOLINTNEXTLINE(*assign*)
+    return operator= <TTarget, NullType>(rhs);
   }
 
   weak_intrusive_ptr& operator=(
@@ -779,7 +790,7 @@ class weak_intrusive_ptr final {
 
   template <class From, class FromNullType>
   weak_intrusive_ptr& operator=(
-      const weak_intrusive_ptr<From, NullType>& rhs) & {
+      const weak_intrusive_ptr<From, NullType>& rhs) & noexcept {
     static_assert(
         std::is_convertible<From*, TTarget*>::value,
         "Type mismatch. weak_intrusive_ptr copy assignment got pointer of wrong type.");

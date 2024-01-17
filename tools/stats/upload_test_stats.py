@@ -4,14 +4,26 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from tools.stats.upload_stats_lib import (
     download_gha_artifacts,
     download_s3_artifacts,
     unzip,
-    upload_to_s3,
+    upload_workflow_stats_to_s3,
 )
+
+
+def get_job_id(report: Path) -> Optional[int]:
+    # [Job id in artifacts]
+    # Retrieve the job id from the report path. In our GHA workflows, we append
+    # the job id to the end of the report name, so `report` looks like:
+    #     unzipped-test-reports-foo_5596745227/test/test-reports/foo/TEST-foo.xml
+    # and we want to get `5596745227` out of it.
+    try:
+        return int(report.parts[0].rpartition("_")[2])
+    except ValueError:
+        return None
 
 
 def parse_xml_report(
@@ -22,17 +34,13 @@ def parse_xml_report(
 ) -> List[Dict[str, Any]]:
     """Convert a test report xml file into a JSON-serializable list of test cases."""
     print(f"Parsing {tag}s for test report: {report}")
-    # [Job id in artifacts]
-    # Retrieve the job id from the report path. In our GHA workflows, we append
-    # the job id to the end of the report name, so `report` looks like:
-    #     unzipped-test-reports-foo_5596745227/test/test-reports/foo/TEST-foo.xml
-    # and we want to get `5596745227` out of it.
-    job_id = int(report.parts[0].rpartition("_")[2])
+
+    job_id = get_job_id(report)
     print(f"Found job id: {job_id}")
 
-    root = ET.parse(report)
+    test_cases: List[Dict[str, Any]] = []
 
-    test_cases = []
+    root = ET.parse(report)
     for test_case in root.iter(tag):
         case = process_xml_element(test_case)
         case["workflow_id"] = workflow_id
@@ -145,6 +153,21 @@ def get_tests(workflow_run_id: int, workflow_run_attempt: int) -> List[Dict[str,
         return test_cases
 
 
+def get_tests_for_circleci(
+    workflow_run_id: int, workflow_run_attempt: int
+) -> List[Dict[str, Any]]:
+    # Parse the reports and transform them to JSON
+    test_cases = []
+    for xml_report in Path(".").glob("**/test/test-reports/**/*.xml"):
+        test_cases.extend(
+            parse_xml_report(
+                "testcase", xml_report, workflow_run_id, workflow_run_attempt
+            )
+        )
+
+    return test_cases
+
+
 def summarize_test_cases(test_cases: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Group test cases by classname, file, and job_id. We perform the aggregation
     manually instead of using the `test-suite` XML tag because xmlrunner does
@@ -204,7 +227,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Upload test stats to Rockset")
     parser.add_argument(
         "--workflow-run-id",
-        type=int,
         required=True,
         help="id of the workflow to get artifacts from",
     )
@@ -219,23 +241,58 @@ if __name__ == "__main__":
         required=True,
         help="Head branch of the workflow",
     )
+    parser.add_argument(
+        "--head-repository",
+        required=True,
+        help="Head repository of the workflow",
+    )
+    parser.add_argument(
+        "--circleci",
+        action="store_true",
+        help="If this is being run through circleci",
+    )
     args = parser.parse_args()
-    test_cases = get_tests(args.workflow_run_id, args.workflow_run_attempt)
 
-    # Flush stdout so that any errors in rockset upload show up last in the logs.
+    print(f"Workflow id is: {args.workflow_run_id}")
+
+    if args.circleci:
+        test_cases = get_tests_for_circleci(
+            args.workflow_run_id, args.workflow_run_attempt
+        )
+    else:
+        test_cases = get_tests(args.workflow_run_id, args.workflow_run_attempt)
+
+    # Flush stdout so that any errors in Rockset upload show up last in the logs.
     sys.stdout.flush()
 
     # For PRs, only upload a summary of test_runs. This helps lower the
     # volume of writes we do to Rockset.
-    upload_to_s3(
+    test_case_summary = summarize_test_cases(test_cases)
+
+    upload_workflow_stats_to_s3(
         args.workflow_run_id,
         args.workflow_run_attempt,
         "test_run_summary",
-        summarize_test_cases(test_cases),
+        test_case_summary,
     )
 
-    if args.head_branch == "master":
-        # For master jobs, upload everytihng.
-        upload_to_s3(
+    # Separate out the failed test cases.
+    # Uploading everything is too data intensive most of the time,
+    # but these will be just a tiny fraction.
+    failed_tests_cases = []
+    for test_case in test_cases:
+        if "rerun" in test_case or "failure" in test_case or "error" in test_case:
+            failed_tests_cases.append(test_case)
+
+    upload_workflow_stats_to_s3(
+        args.workflow_run_id,
+        args.workflow_run_attempt,
+        "failed_test_runs",
+        failed_tests_cases,
+    )
+
+    if args.head_branch == "main" and args.head_repository == "pytorch/pytorch":
+        # For jobs on main branch, upload everything.
+        upload_workflow_stats_to_s3(
             args.workflow_run_id, args.workflow_run_attempt, "test_run", test_cases
         )

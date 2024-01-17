@@ -1,23 +1,16 @@
 #pragma once
 
 #include <c10/core/Allocator.h>
-#include <ATen/core/Generator.h>
 #include <c10/util/Exception.h>
-#include <c10/util/Optional.h>
 #include <c10/util/Registry.h>
 
-#include <cstddef>
-#include <functional>
-#include <memory>
-
-// Forward-declares at::cuda::NVRTC
-namespace at { namespace cuda {
-struct NVRTC;
-}} // at::cuda
-
+// Forward-declares at::Generator and at::cuda::NVRTC
 namespace at {
-class Context;
-}
+struct Generator;
+namespace cuda {
+struct NVRTC;
+} // namespace cuda
+} // namespace at
 
 // NB: Class must live in `at` due to limitations of Registry.h.
 namespace at {
@@ -67,15 +60,14 @@ constexpr const char* CUDA_HELP =
 struct TORCH_API CUDAHooksInterface {
   // This should never actually be implemented, but it is used to
   // squelch -Werror=non-virtual-dtor
-  virtual ~CUDAHooksInterface() {}
+  virtual ~CUDAHooksInterface() = default;
 
   // Initialize THCState and, transitively, the CUDA state
   virtual void initCUDA() const {
     TORCH_CHECK(false, "Cannot initialize CUDA without ATen_cuda library. ", CUDA_HELP);
   }
 
-  virtual const Generator& getDefaultCUDAGenerator(DeviceIndex device_index = -1) const {
-    (void)device_index; // Suppress unused variable warning
+  virtual const Generator& getDefaultCUDAGenerator(C10_UNUSED DeviceIndex device_index = -1) const {
     TORCH_CHECK(false, "Cannot get default CUDA generator without ATen_cuda library. ", CUDA_HELP);
   }
 
@@ -83,7 +75,7 @@ struct TORCH_API CUDAHooksInterface {
     TORCH_CHECK(false, "Cannot get device of pointer on CUDA without ATen_cuda library. ", CUDA_HELP);
   }
 
-  virtual bool isPinnedPtr(void* /*data*/) const {
+  virtual bool isPinnedPtr(const void* /*data*/) const {
     return false;
   }
 
@@ -115,11 +107,11 @@ struct TORCH_API CUDAHooksInterface {
     TORCH_CHECK(false, "NVRTC requires CUDA. ", CUDA_HELP);
   }
 
-  virtual bool hasPrimaryContext(int64_t device_index) const {
+  virtual bool hasPrimaryContext(DeviceIndex device_index) const {
     TORCH_CHECK(false, "Cannot call hasPrimaryContext(", device_index, ") without ATen_cuda library. ", CUDA_HELP);
   }
 
-  virtual int64_t current_device() const {
+  virtual DeviceIndex current_device() const {
     return -1;
   }
 
@@ -147,6 +139,10 @@ struct TORCH_API CUDAHooksInterface {
     return false;
   }
 
+  virtual bool supportsBFloat16ConvolutionWithCuDNNv8() const {
+    return false;
+  }
+
   virtual long versionCuDNN() const {
     TORCH_CHECK(false, "Cannot query cuDNN version without ATen_cuda library. ", CUDA_HELP);
   }
@@ -164,19 +160,19 @@ struct TORCH_API CUDAHooksInterface {
         "Cannot query batchnormMinEpsilonCuDNN() without ATen_cuda library. ", CUDA_HELP);
   }
 
-  virtual int64_t cuFFTGetPlanCacheMaxSize(int64_t /*device_index*/) const {
+  virtual int64_t cuFFTGetPlanCacheMaxSize(DeviceIndex /*device_index*/) const {
     TORCH_CHECK(false, "Cannot access cuFFT plan cache without ATen_cuda library. ", CUDA_HELP);
   }
 
-  virtual void cuFFTSetPlanCacheMaxSize(int64_t /*device_index*/, int64_t /*max_size*/) const {
+  virtual void cuFFTSetPlanCacheMaxSize(DeviceIndex /*device_index*/, int64_t /*max_size*/) const {
     TORCH_CHECK(false, "Cannot access cuFFT plan cache without ATen_cuda library. ", CUDA_HELP);
   }
 
-  virtual int64_t cuFFTGetPlanCacheSize(int64_t /*device_index*/) const {
+  virtual int64_t cuFFTGetPlanCacheSize(DeviceIndex /*device_index*/) const {
     TORCH_CHECK(false, "Cannot access cuFFT plan cache without ATen_cuda library. ", CUDA_HELP);
   }
 
-  virtual void cuFFTClearPlanCache(int64_t /*device_index*/) const {
+  virtual void cuFFTClearPlanCache(DeviceIndex /*device_index*/) const {
     TORCH_CHECK(false, "Cannot access cuFFT plan cache without ATen_cuda library. ", CUDA_HELP);
   }
 
@@ -184,7 +180,7 @@ struct TORCH_API CUDAHooksInterface {
     return 0;
   }
 
-  virtual void deviceSynchronize(int64_t /*device_index*/) const {
+  virtual void deviceSynchronize(DeviceIndex /*device_index*/) const {
     TORCH_CHECK(false, "Cannot synchronize CUDA device without ATen_cuda library. ", CUDA_HELP);
   }
 };
@@ -193,7 +189,7 @@ struct TORCH_API CUDAHooksInterface {
 // for the "..." in a variadic macro"
 struct TORCH_API CUDAHooksArgs {};
 
-C10_DECLARE_REGISTRY(CUDAHooksRegistry, CUDAHooksInterface, CUDAHooksArgs);
+TORCH_DECLARE_REGISTRY(CUDAHooksRegistry, CUDAHooksInterface, CUDAHooksArgs);
 #define REGISTER_CUDA_HOOKS(clsname) \
   C10_REGISTER_CLASS(CUDAHooksRegistry, clsname, clsname)
 

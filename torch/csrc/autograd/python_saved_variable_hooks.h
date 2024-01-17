@@ -6,11 +6,11 @@
 #include <torch/csrc/autograd/python_variable.h>
 #include <torch/csrc/autograd/saved_variable_hooks.h>
 #include <torch/csrc/python_headers.h>
+#include <torch/csrc/utils/pybind.h>
 
 namespace py = pybind11;
 
-namespace torch {
-namespace autograd {
+namespace torch::autograd {
 
 struct PySavedVariableHooks : public SavedVariableHooks {
   PySavedVariableHooks(py::function& pack_hook, py::function& unpack_hook);
@@ -30,5 +30,4 @@ struct PyDefaultSavedVariableHooks {
   static std::unique_ptr<SavedVariableHooks> get_hooks();
 };
 
-} // namespace autograd
-} // namespace torch
+} // namespace torch::autograd

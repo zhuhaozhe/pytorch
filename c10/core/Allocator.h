@@ -1,9 +1,15 @@
 #pragma once
 
-#include <stddef.h>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <memory>
+#include <utility>
 
 #include <c10/core/Device.h>
+#include <c10/core/DeviceType.h>
+#include <c10/macros/Export.h>
+#include <c10/macros/Macros.h>
 #include <c10/util/Exception.h>
 #include <c10/util/ThreadLocalDebugInfo.h>
 #include <c10/util/UniqueVoidPtr.h>
@@ -36,6 +42,9 @@ class C10_API DataPtr {
     ptr_.clear();
   }
   void* get() const {
+    return ptr_.get();
+  }
+  void* mutable_get() {
     return ptr_.get();
   }
   void* get_context() const {
@@ -153,6 +162,21 @@ struct C10_API Allocator {
 
   virtual DataPtr allocate(size_t n) const = 0;
 
+  // Clones an allocation that came from this allocator.
+  //
+  // To perform the copy, this function calls `copy_data`, which
+  // must be implemented by derived classes.
+  //
+  // Note that this explicitly ignores any context that may have been
+  // attached to the input data.
+  //
+  // Requires: input data was allocated by the same allocator.
+  DataPtr clone(const void* data, std::size_t n) const;
+
+  // Checks if DataPtr has a simple context, not wrapped with any out of the
+  // ordinary contexts.
+  virtual bool is_simple_data_ptr(const DataPtr& data_ptr) const;
+
   // If this returns a non nullptr, it means that allocate()
   // is guaranteed to return a unique_ptr with this deleter attached;
   // it means the rawAllocate and rawDeallocate APIs are safe to use.
@@ -170,6 +194,22 @@ struct C10_API Allocator {
     AT_ASSERT(d);
     d(ptr);
   }
+
+  // Copies data from one allocation to another.
+  // Pure virtual, so derived classes must define behavior.
+  // Derived class implementation can simply call `default_copy_data`
+  // to use `std::memcpy`.
+  //
+  // Requires: src and dest were allocated by this allocator
+  // Requires: src and dest both have length >= count
+  virtual void copy_data(void* dest, const void* src, std::size_t count)
+      const = 0;
+
+ protected:
+  // Uses `std::memcpy` to copy data.
+  // Child classes can use this as `copy_data` when an alternative copy
+  // API is not needed.
+  void default_copy_data(void* dest, const void* src, std::size_t count) const;
 };
 
 // This context is used to generate DataPtr which have arbitrary
@@ -226,7 +266,7 @@ struct AllocatorRegisterer {
 // per device
 struct C10_API MemoryReportingInfoBase : public c10::DebugInfoBase {
   MemoryReportingInfoBase();
-  virtual ~MemoryReportingInfoBase() {}
+  ~MemoryReportingInfoBase() override = default;
 
   /**
    * alloc_size corresponds to the size of the ptr.
@@ -239,9 +279,15 @@ struct C10_API MemoryReportingInfoBase : public c10::DebugInfoBase {
   virtual void reportMemoryUsage(
       void* ptr,
       int64_t alloc_size,
-      int64_t total_allocated,
-      int64_t total_reserved,
+      size_t total_allocated,
+      size_t total_reserved,
       Device device) = 0;
+
+  virtual void reportOutOfMemory(
+      int64_t alloc_size,
+      size_t total_allocated,
+      size_t total_reserved,
+      Device device);
 
   virtual bool memoryProfilingEnabled() const = 0;
 };
@@ -250,8 +296,19 @@ C10_API bool memoryProfilingEnabled();
 C10_API void reportMemoryUsageToProfiler(
     void* ptr,
     int64_t alloc_size,
-    int64_t total_allocated,
-    int64_t total_reserved,
+    size_t total_allocated,
+    size_t total_reserved,
     Device device);
+
+C10_API void reportOutOfMemoryToProfiler(
+    int64_t alloc_size,
+    size_t total_allocated,
+    size_t total_reserved,
+    Device device);
+
+// used to hold traceback information in allocators
+struct GatheredContext {
+  virtual ~GatheredContext() = default;
+};
 
 } // namespace c10

@@ -58,8 +58,7 @@ fi
 PIP_UPLOAD_FOLDER='nightly/'
 # We put this here so that OVERRIDE_PACKAGE_VERSION below can read from it
 export DATE="$(date -u +%Y%m%d)"
-#TODO: We should be pulling semver version from the base version.txt
-BASE_BUILD_VERSION="1.13.0.dev$DATE"
+BASE_BUILD_VERSION="$(cat ${PYTORCH_ROOT}/version.txt|cut -da -f1).dev${DATE}"
 # Change BASE_BUILD_VERSION to git tag when on a git tag
 # Use 'git -C' to make doubly sure we're in the correct directory for checking
 # the git tag
@@ -76,8 +75,8 @@ if [[ "$(uname)" == 'Darwin' ]] || [[ "$PACKAGE_TYPE" == conda ]]; then
 else
   export PYTORCH_BUILD_VERSION="${BASE_BUILD_VERSION}+$DESIRED_CUDA"
 fi
-export PYTORCH_BUILD_NUMBER=1
 
+export PYTORCH_BUILD_NUMBER=1
 
 JAVA_HOME=
 BUILD_JNI=OFF
@@ -87,11 +86,11 @@ if [[ "$PACKAGE_TYPE" == libtorch ]]; then
   POSSIBLE_JAVA_HOMES+=(/usr/lib/jvm/java-8-openjdk-amd64)
   POSSIBLE_JAVA_HOMES+=(/Library/Java/JavaVirtualMachines/*.jdk/Contents/Home)
   # Add the Windows-specific JNI path
-  POSSIBLE_JAVA_HOMES+=("$PWD/.circleci/windows-jni/")
+  POSSIBLE_JAVA_HOMES+=("$PWD/pytorch/.circleci/windows-jni/")
   for JH in "${POSSIBLE_JAVA_HOMES[@]}" ; do
     if [[ -e "$JH/include/jni.h" ]] ; then
       # Skip if we're not on Windows but haven't found a JAVA_HOME
-      if [[ "$JH" == "$PWD/.circleci/windows-jni/" && "$OSTYPE" != "msys" ]] ; then
+      if [[ "$JH" == "$PWD/pytorch/.circleci/windows-jni/" && "$OSTYPE" != "msys" ]] ; then
         break
       fi
       echo "Found jni.h under $JH"
@@ -124,9 +123,9 @@ if [[ "${OSTYPE}" == "msys" ]]; then
 else
   export DESIRED_DEVTOOLSET="${DESIRED_DEVTOOLSET:-}"
 fi
-
+export PYTORCH_EXTRA_INSTALL_REQUIREMENTS="${PYTORCH_EXTRA_INSTALL_REQUIREMENTS:-}"
 export DATE="$DATE"
-export NIGHTLIES_DATE_PREAMBLE=1.13.0.dev
+export NIGHTLIES_DATE_PREAMBLE=1.14.0.dev
 export PYTORCH_BUILD_VERSION="$PYTORCH_BUILD_VERSION"
 export PYTORCH_BUILD_NUMBER="$PYTORCH_BUILD_NUMBER"
 export OVERRIDE_PACKAGE_VERSION="$PYTORCH_BUILD_VERSION"
@@ -150,8 +149,8 @@ EOL
 
 # nproc doesn't exist on darwin
 if [[ "$(uname)" != Darwin ]]; then
-  # Because most Circle executors only have 20 CPUs, using more causes OOMs w/ Ninja and nvcc parallelization
-  MEMORY_LIMIT_MAX_JOBS=18
+  # This was lowered from 18 to 12 to avoid OOMs when compiling FlashAttentionV2
+  MEMORY_LIMIT_MAX_JOBS=12
   NUM_CPUS=$(( $(nproc) - 2 ))
 
   # Defaults here for **binary** linux builds so they can be changed in one place

@@ -5,11 +5,6 @@
 #include <c10/core/TensorOptions.h>
 #include <c10/util/strides.h>
 
-C10_CLANG_DIAGNOSTIC_PUSH()
-#if C10_CLANG_HAS_WARNING("-Wdeprecated-copy-dtor")
-C10_CLANG_DIAGNOSTIC_IGNORE("-Wdeprecated-copy-dtor")
-#endif
-
 namespace at {
 
 class Tensor;
@@ -69,8 +64,14 @@ namespace impl {
 //
 // A notable subclass of this interface is TensorIteratorBase.
 struct TORCH_API MetaBase {
+  MetaBase() = default;
+  MetaBase(const MetaBase&) = default;
+  MetaBase& operator=(const MetaBase&) = default;
+  MetaBase(MetaBase&&) noexcept = default;
+  MetaBase& operator=(MetaBase&&) noexcept = default;
   virtual const Tensor& maybe_get_output(int64_t output_idx) = 0;
 
+  // Note: [set_output_*]
   // See: https://github.com/pytorch/pytorch/issues/69813
   // Whenever defining the output properties in the META function of a
   // structured kernel (what was usually done with `set_output`), use one of
@@ -128,11 +129,9 @@ struct TORCH_API MetaBase {
   const Tensor& maybe_get_output() {
     return maybe_get_output(0);
   }
-  virtual ~MetaBase() {}
+  virtual ~MetaBase() = default;
 };
 
 } // namespace impl
 
 } // namespace at
-
-C10_CLANG_DIAGNOSTIC_POP()

@@ -17,9 +17,7 @@ EventMetadataValue = Union[str, int, float, bool, None]
 
 
 class EventSource(str, Enum):
-    """
-    Known identifiers of the event producers.
-    """
+    """Known identifiers of the event producers."""
 
     AGENT = "AGENT"
     WORKER = "WORKER"
@@ -28,13 +26,14 @@ class EventSource(str, Enum):
 @dataclass
 class Event:
     """
-    The class represents the generic event that occurs during the torchelastic
-    job execution. The event can be any kind of meaningful action.
+    The class represents the generic event that occurs during the torchelastic job execution.
+
+    The event can be any kind of meaningful action.
 
     Args:
         name: event name.
         source: the event producer, e.g. agent or worker
-        timestamp: timestamp in milliseconds when event occured.
+        timestamp: timestamp in milliseconds when event occurred.
         metadata: additional data that is associated with the event.
     """
 
@@ -60,9 +59,7 @@ class Event:
 
 
 class NodeState(str, Enum):
-    """
-    The states that a node can be in rendezvous.
-    """
+    """The states that a node can be in rendezvous."""
 
     INIT = "INIT"
     RUNNING = "RUNNING"

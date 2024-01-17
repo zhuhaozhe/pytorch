@@ -7,27 +7,6 @@ namespace vulkan {
 namespace api {
 
 //
-// Utility Functions
-//
-
-VkFormat vk_format(const caffe2::TypeMeta dtype) {
-  switch (c10::typeMetaToScalarType(dtype)) {
-    case kFloat:
-#ifdef USE_VULKAN_FP16_INFERENCE
-      return VK_FORMAT_R16G16B16A16_SFLOAT;
-#else
-      return VK_FORMAT_R32G32B32A32_SFLOAT;
-#endif /* USE_VULKAN_FP16_INFERENCE */
-
-    case c10::kQUInt8:
-      return VK_FORMAT_R8G8B8A8_UINT;
-
-    default:
-      TORCH_CHECK(false, "Vulkan tensor format not supported!");
-  }
-  return VK_FORMAT_UNDEFINED;
-}
-//
 // MemoryBarrier
 //
 
@@ -53,7 +32,7 @@ VulkanBuffer::VulkanBuffer()
       handle_(VK_NULL_HANDLE) {}
 
 VulkanBuffer::VulkanBuffer(
-    const VmaAllocator vma_allocator,
+    VmaAllocator vma_allocator,
     const VkDeviceSize size,
     const VulkanBuffer::MemoryProperties& mem_props)
     : memory_properties_(mem_props),
@@ -65,6 +44,11 @@ VulkanBuffer::VulkanBuffer(
       allocator_(vma_allocator),
       allocation_(VK_NULL_HANDLE),
       handle_(VK_NULL_HANDLE) {
+  // Only allocate memory if the buffer has non-zero size
+  if (size == 0) {
+    return;
+  }
+
   const VkBufferCreateInfo buffer_create_info{
       VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, // sType
       nullptr, // pNext
@@ -108,8 +92,8 @@ VulkanBuffer::VulkanBuffer(VulkanBuffer&& other) noexcept
 }
 
 VulkanBuffer& VulkanBuffer::operator=(VulkanBuffer&& other) noexcept {
-  const VmaAllocation tmp_allocation = allocation_;
-  const VkBuffer tmp_buffer = handle_;
+  VmaAllocation tmp_allocation = allocation_;
+  VkBuffer tmp_buffer = handle_;
 
   memory_properties_ = other.memory_properties_;
   buffer_properties_ = other.buffer_properties_;
@@ -137,36 +121,43 @@ MemoryMap::MemoryMap(const VulkanBuffer& buffer, const uint8_t access)
     : access_(access),
       allocator_(buffer.vma_allocator()),
       allocation_(buffer.allocation()),
-      data_(nullptr) {
-  VK_CHECK(vmaMapMemory(allocator_, allocation_, &data_));
+      data_(nullptr),
+      data_len_{buffer.mem_size()} {
+  if (allocation_) {
+    VK_CHECK(vmaMapMemory(allocator_, allocation_, &data_));
+  }
 }
 
 MemoryMap::MemoryMap(MemoryMap&& other) noexcept
     : access_(other.access_),
       allocator_(other.allocator_),
       allocation_(other.allocation_),
-      data_(other.data_) {
+      data_(other.data_),
+      data_len_{other.data_len_} {
   other.allocation_ = VK_NULL_HANDLE;
   other.data_ = nullptr;
 }
 
 MemoryMap::~MemoryMap() {
-  if (C10_UNLIKELY(!data_)) {
+  if (!data_) {
     return;
   }
 
-  if (access_ & MemoryAccessType::WRITE) {
-    // Call will be ignored by implementation if the memory type this allocation
-    // belongs to is not HOST_VISIBLE or is HOST_COHERENT, which is the behavior
-    // we want.
-    VK_CHECK(vmaFlushAllocation(allocator_, allocation_, 0u, VK_WHOLE_SIZE));
-  }
+  if (allocation_) {
+    if (access_ & MemoryAccessType::WRITE) {
+      // Call will be ignored by implementation if the memory type this
+      // allocation belongs to is not HOST_VISIBLE or is HOST_COHERENT, which is
+      // the behavior we want. Don't check the result here as the destructor
+      // cannot throw.
+      vmaFlushAllocation(allocator_, allocation_, 0u, VK_WHOLE_SIZE);
+    }
 
-  vmaUnmapMemory(allocator_, allocation_);
+    vmaUnmapMemory(allocator_, allocation_);
+  }
 }
 
 void MemoryMap::invalidate() {
-  if (access_ & MemoryAccessType::READ) {
+  if (access_ & MemoryAccessType::READ && allocation_) {
     // Call will be ignored by implementation if the memory type this allocation
     // belongs to is not HOST_VISIBLE or is HOST_COHERENT, which is the behavior
     // we want.
@@ -208,7 +199,7 @@ bool operator==(
 }
 
 ImageSampler::ImageSampler(
-    const VkDevice device,
+    VkDevice device,
     const ImageSampler::Properties& props)
     : device_(device), handle_(VK_NULL_HANDLE) {
   const VkSamplerCreateInfo sampler_create_info{
@@ -241,7 +232,7 @@ ImageSampler::ImageSampler(ImageSampler&& other) noexcept
 }
 
 ImageSampler::~ImageSampler() {
-  if C10_LIKELY (VK_NULL_HANDLE == handle_) {
+  if (VK_NULL_HANDLE == handle_) {
     return;
   }
   vkDestroySampler(device_, handle_, nullptr);
@@ -249,8 +240,15 @@ ImageSampler::~ImageSampler() {
 
 size_t ImageSampler::Hasher::operator()(
     const ImageSampler::Properties& props) const {
-  return c10::get_hash(
-      props.filter, props.mipmap_mode, props.address_mode, props.border_color);
+  size_t seed = 0;
+  seed = utils::hash_combine(seed, std::hash<VkFilter>()(props.filter));
+  seed = utils::hash_combine(
+      seed, std::hash<VkSamplerMipmapMode>()(props.mipmap_mode));
+  seed = utils::hash_combine(
+      seed, std::hash<VkSamplerAddressMode>()(props.address_mode));
+  seed =
+      utils::hash_combine(seed, std::hash<VkBorderColor>()(props.border_color));
+  return seed;
 }
 
 void swap(ImageSampler& lhs, ImageSampler& rhs) noexcept {
@@ -283,14 +281,14 @@ VulkanImage::VulkanImage()
       layout_{} {}
 
 VulkanImage::VulkanImage(
-    const VmaAllocator vma_allocator,
-    const VkDevice device,
+    VmaAllocator vma_allocator,
+    VkDevice device,
     const MemoryProperties& mem_props,
     const ImageProperties& image_props,
     const ViewProperties& view_props,
     const SamplerProperties& sampler_props,
     const VkImageLayout layout,
-    const VkSampler sampler)
+    VkSampler sampler)
     : memory_properties_(mem_props),
       image_properties_(image_props),
       view_properties_(view_props),
@@ -303,6 +301,13 @@ VulkanImage::VulkanImage(
           sampler,
       },
       layout_(layout) {
+  // If any dims are zero, then no memory will be allocated for the image.
+  if (image_props.image_extents.width == 0 ||
+      image_props.image_extents.height == 0 ||
+      image_props.image_extents.depth == 0) {
+    return;
+  }
+
   const VkImageCreateInfo image_create_info{
       VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, // sType
       nullptr, // pNext
@@ -389,9 +394,9 @@ VulkanImage::VulkanImage(VulkanImage&& other) noexcept
 }
 
 VulkanImage& VulkanImage::operator=(VulkanImage&& other) noexcept {
-  const VmaAllocation tmp_allocation = allocation_;
-  const VkImage tmp_image = handles_.image;
-  const VkImageView tmp_image_view = handles_.image_view;
+  VmaAllocation tmp_allocation = allocation_;
+  VkImage tmp_image = handles_.image;
+  VkImageView tmp_image_view = handles_.image_view;
 
   memory_properties_ = other.memory_properties_;
   image_properties_ = other.image_properties_;
@@ -455,13 +460,12 @@ ImageMemoryBarrier::ImageMemoryBarrier(
 // SamplerCache
 //
 
-SamplerCache::SamplerCache(const VkDevice device)
+SamplerCache::SamplerCache(VkDevice device)
     : cache_mutex_{}, device_(device), cache_{} {}
 
 SamplerCache::SamplerCache(SamplerCache&& other) noexcept
-    : cache_mutex_{}, device_(other.device_) {
+    : cache_mutex_{}, device_(other.device_), cache_(std::move(other.cache_)) {
   std::lock_guard<std::mutex> lock(other.cache_mutex_);
-  cache_ = std::move(other.cache_);
 }
 
 SamplerCache::~SamplerCache() {
@@ -472,7 +476,7 @@ VkSampler SamplerCache::retrieve(const SamplerCache::Key& key) {
   std::lock_guard<std::mutex> lock(cache_mutex_);
 
   auto it = cache_.find(key);
-  if C10_UNLIKELY (cache_.cend() == it) {
+  if (cache_.cend() == it) {
     it = cache_.insert({key, SamplerCache::Value(device_, key)}).first;
   }
 
@@ -480,6 +484,7 @@ VkSampler SamplerCache::retrieve(const SamplerCache::Key& key) {
 }
 
 void SamplerCache::purge() {
+  std::lock_guard<std::mutex> lock(cache_mutex_);
   cache_.clear();
 }
 
@@ -488,9 +493,9 @@ void SamplerCache::purge() {
 //
 
 MemoryAllocator::MemoryAllocator(
-    const VkInstance instance,
-    const VkPhysicalDevice physical_device,
-    const VkDevice device)
+    VkInstance instance,
+    VkPhysicalDevice physical_device,
+    VkDevice device)
     : instance_{},
       physical_device_(physical_device),
       device_(device),
@@ -528,26 +533,26 @@ MemoryAllocator::MemoryAllocator(MemoryAllocator&& other) noexcept
 }
 
 MemoryAllocator::~MemoryAllocator() {
-  if C10_LIKELY (VK_NULL_HANDLE == allocator_) {
+  if (VK_NULL_HANDLE == allocator_) {
     return;
   }
   vmaDestroyAllocator(allocator_);
 }
 
-VulkanImage MemoryAllocator::create_image3d(
+VulkanImage MemoryAllocator::create_image(
     const VkExtent3D& extents,
+    const VkFormat image_format,
+    const VkImageType image_type,
+    const VkImageViewType image_view_type,
     const VulkanImage::SamplerProperties& sampler_props,
-    const VkSampler sampler,
-    const caffe2::TypeMeta dtype,
-    bool allow_transfer) {
+    VkSampler sampler,
+    const bool allow_transfer) {
   VkImageUsageFlags usage =
       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
   if (allow_transfer) {
     usage |=
         (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
   }
-
-  const VkFormat image_format = vk_format(dtype);
 
   const VulkanImage::MemoryProperties mem_props{
       DEFAULT_ALLOCATION_STRATEGY,
@@ -558,13 +563,13 @@ VulkanImage MemoryAllocator::create_image3d(
   };
 
   const VulkanImage::ImageProperties image_props{
-      VK_IMAGE_TYPE_3D,
+      image_type,
       image_format,
       extents,
   };
 
   const VulkanImage::ViewProperties view_props{
-      VK_IMAGE_VIEW_TYPE_3D,
+      image_view_type,
       image_format,
   };
 
@@ -587,7 +592,7 @@ VulkanBuffer MemoryAllocator::create_storage_buffer(
   const VkBufferUsageFlags buffer_usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
   VmaAllocationCreateFlags create_flags = DEFAULT_ALLOCATION_STRATEGY;
-  if (gpu_only) {
+  if (!gpu_only) {
     create_flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
   }
 
@@ -625,6 +630,21 @@ VulkanBuffer MemoryAllocator::create_staging_buffer(const VkDeviceSize size) {
   return VulkanBuffer(allocator_, size, mem_props);
 }
 
+VulkanBuffer MemoryAllocator::create_uniform_buffer(const VkDeviceSize size) {
+  const VulkanBuffer::MemoryProperties mem_props{
+      DEFAULT_ALLOCATION_STRATEGY |
+          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+      VMA_MEMORY_USAGE_AUTO,
+      0u,
+      0u,
+      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+  };
+
+  VulkanBuffer uniform_buffer(allocator_, size, mem_props);
+
+  return uniform_buffer;
+}
+
 //
 // VulkanFence
 //
@@ -632,7 +652,7 @@ VulkanBuffer MemoryAllocator::create_staging_buffer(const VkDeviceSize size) {
 VulkanFence::VulkanFence()
     : device_(VK_NULL_HANDLE), handle_(VK_NULL_HANDLE), waiting_(false) {}
 
-VulkanFence::VulkanFence(const VkDevice device)
+VulkanFence::VulkanFence(VkDevice device)
     : device_(device), handle_(VK_NULL_HANDLE), waiting_(VK_NULL_HANDLE) {
   const VkFenceCreateInfo fence_create_info{
       VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, // sType
@@ -662,7 +682,7 @@ VulkanFence& VulkanFence::operator=(VulkanFence&& other) noexcept {
 }
 
 VulkanFence::~VulkanFence() {
-  if C10_LIKELY (VK_NULL_HANDLE == handle_) {
+  if (VK_NULL_HANDLE == handle_) {
     return;
   }
   vkDestroyFence(device_, handle_, nullptr);
@@ -679,7 +699,7 @@ void VulkanFence::wait() {
       // The timeout (last) arg is in units of ns
       fence_status = vkWaitForFences(device_, 1u, &handle_, VK_TRUE, 100000);
 
-      TORCH_CHECK(
+      VK_CHECK_COND(
           fence_status != VK_ERROR_DEVICE_LOST,
           "Vulkan Fence: Device lost while waiting for fence!");
     } while (fence_status != VK_SUCCESS);

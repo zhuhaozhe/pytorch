@@ -1,25 +1,36 @@
 #pragma once
 #include <c10/core/DispatchKey.h>
+#include <c10/macros/Export.h>
+#include <c10/macros/Macros.h>
+#include <c10/util/C++17.h>
 #include <c10/util/Exception.h>
 #include <c10/util/Metaprogramming.h>
+#include <c10/util/TypeList.h>
 #include <c10/util/llvmMathExtras.h>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <initializer_list>
+#include <iterator>
 #include <ostream>
+#include <string>
+#include <type_traits>
 
 namespace c10 {
 
 struct FunctionalityOffsetAndMask {
   // empty constructor shouldn't be used; only needed to initialize
   // the array before populating it.
-  FunctionalityOffsetAndMask() {}
+  FunctionalityOffsetAndMask() = default;
   FunctionalityOffsetAndMask(uint16_t offset, uint16_t mask)
       : offset(offset), mask(mask) {}
   // This needs to big enough to cover the size of the operator table.
-  uint16_t offset;
+  uint16_t offset{};
   // See Note [No More Than 16 Backends]
   // This mask needs to be big enough to mask all of the backend bits.
   // We probably don't ever want to have more than 16 backend bits, so uint16_t
   // should be enough.
-  uint16_t mask;
+  uint16_t mask{};
 };
 static_assert(
     c10::num_runtime_entries < 65536,
@@ -80,8 +91,8 @@ C10_ALWAYS_INLINE static const std::
 // 5 categories.
 //
 // (1) "Building block" keys
-//    (a) backends: jEverything in the BackendComponent enum (e.g. CPUBit,
-//    CUDABIt) (b) functionalities: (per-backend) functionality-bit DispatchKeys
+//    (a) backends: Everything in the BackendComponent enum (e.g. CPUBit,
+//    CUDABit) (b) functionalities: (per-backend) functionality-bit DispatchKeys
 //    (e.g. AutogradFunctionality, Sparse, Dense)
 // (2) "Runtime" keys
 //    (a) "non-customizable backends" (e.g. FPGA)
@@ -111,7 +122,7 @@ C10_ALWAYS_INLINE static const std::
 // Sparse, Quantized, AutogradFunctionality, ...). These keys together allow
 // every dispatcher operator to be customized in up to 12*4 different ways. Each
 // of those requires a slot in the operator table of every dispatcher operator.
-// Not every piece of functionality necessarily needs to be customizeable
+// Not every piece of functionality necessarily needs to be customizable
 // per-backend, and not every backend necessarily needs to be able to customize
 // every type of functionality.
 //
@@ -127,10 +138,10 @@ C10_ALWAYS_INLINE static const std::
 
 // (2a) and (2b) are represented identically in the DispatchKeySet logic:
 // - backend-agnostic functionalities (e.g. FuncTorchBatched) are NOT
-// customizeable per backend.
+// customizable per backend.
 //   In order to do so, we'd need to promote it to a per-backend functionality
 //   "building block" key.
-// - non-customizeable backends (e.g. FPGA) can NOT customize existing
+// - non-customizable backends (e.g. FPGA) can NOT customize existing
 // functionality like Sparse, Autograd, etc.
 //   In order to do so, we'd need to promote it to a backend "building block"
 //   key.
@@ -157,7 +168,7 @@ class DispatchKeySet final {
 
   // NB: default constructor representation as zero is MANDATORY as
   // use of DispatchKeySet in TLS requires this.
-  constexpr DispatchKeySet() : repr_(0) {}
+  constexpr DispatchKeySet() = default;
 
   constexpr DispatchKeySet(Full)
       : repr_((1ULL << (num_backends + num_functionality_keys - 1)) - 1) {}
@@ -172,7 +183,9 @@ class DispatchKeySet final {
             (1ULL
              << (num_backends + static_cast<uint8_t>(toFunctionalityKey(t)) -
                  1)) -
-            1) {}
+            1) {
+    *this = add(DispatchKey::PythonDispatcher);
+  }
 
   // Public version of DispatchKeySet(uint64_t) API; external users
   // must be explicit when they do this!
@@ -187,6 +200,7 @@ class DispatchKeySet final {
   }
 
   constexpr explicit DispatchKeySet(DispatchKey k) {
+    // NOLINTNEXTLINE(bugprone-branch-clone)
     if (k == DispatchKey::Undefined) {
       // Case 1: handle Undefined specifically
       repr_ = 0;
@@ -640,6 +654,10 @@ constexpr DispatchKeySet autocast_dispatch_keyset = DispatchKeySet({
     DispatchKey::AutocastCPU,
     DispatchKey::AutocastCUDA,
     DispatchKey::AutocastXPU,
+    DispatchKey::AutocastIPU,
+    DispatchKey::AutocastHPU,
+    DispatchKey::AutocastXLA,
+    DispatchKey::AutocastPrivateUse1,
 });
 
 // See Note [TLS Initialization]
@@ -652,6 +670,10 @@ constexpr DispatchKeySet default_excluded_set = DispatchKeySet({
     DispatchKey::AutocastCPU,
     DispatchKey::AutocastCUDA,
     DispatchKey::AutocastXPU,
+    DispatchKey::AutocastIPU,
+    DispatchKey::AutocastHPU,
+    DispatchKey::AutocastXLA,
+    DispatchKey::AutocastPrivateUse1,
 });
 
 constexpr DispatchKeySet autograd_dispatch_keyset_with_ADInplaceOrView =
@@ -744,7 +766,7 @@ constexpr auto autograd_privateuse3_ks =
 constexpr auto autograd_other_ks = DispatchKeySet(DispatchKey::AutogradOther);
 constexpr auto autograd_nested =
     DispatchKeySet(DispatchKey::AutogradNestedTensor);
-// keyset correpsonding to functorch keys that have their own dedicated
+// keyset corresponding to functorch keys that have their own dedicated
 // TensorImpl subclass.
 constexpr auto functorch_transforms_ks = DispatchKeySet(
     {DispatchKey::FuncTorchBatched,
@@ -752,6 +774,9 @@ constexpr auto functorch_transforms_ks = DispatchKeySet(
      DispatchKey::Batched,
      DispatchKey::VmapMode,
      DispatchKey::FuncTorchGradWrapper});
+
+constexpr auto functorch_batched_ks =
+    DispatchKeySet({DispatchKey::FuncTorchBatched});
 
 // This keyset has:
 // (1) the functionality bits corresponding to backends (dense, sparse,
@@ -781,7 +806,7 @@ C10_API bool isBackendDispatchKey(DispatchKey t);
 C10_API DispatchKeySet getRuntimeDispatchKeySet(DispatchKey t);
 
 // Resolve alias dispatch key to DispatchKeySet if applicable,
-// and chek if k is a part of that set
+// and check if k is a part of that set
 C10_API bool runtimeDispatchKeySetHas(DispatchKey t, DispatchKey k);
 
 // Returns a DispatchKeySet of all backend keys mapped to Autograd dispatch key
@@ -830,15 +855,27 @@ inline DispatchKeySet getAutogradRelatedKeySetFromBackend(BackendComponent t) {
 inline DispatchKeySet getAutocastRelatedKeySetFromBackend(BackendComponent t) {
   constexpr auto autocast_cpu_ks = DispatchKeySet(DispatchKey::AutocastCPU);
   constexpr auto autocast_xpu_ks = DispatchKeySet(DispatchKey::AutocastXPU);
+  constexpr auto autocast_ipu_ks = DispatchKeySet(DispatchKey::AutocastIPU);
+  constexpr auto autocast_hpu_ks = DispatchKeySet(DispatchKey::AutocastHPU);
   constexpr auto autocast_cuda_ks = DispatchKeySet(DispatchKey::AutocastCUDA);
+  constexpr auto autocast_xla_ks = DispatchKeySet(DispatchKey::AutocastXLA);
+  constexpr auto autocast_privateuse1_ks =
+      DispatchKeySet(DispatchKey::AutocastPrivateUse1);
   switch (t) {
     case BackendComponent::CPUBit:
       return autocast_cpu_ks;
     case BackendComponent::XPUBit:
       return autocast_xpu_ks;
+    case BackendComponent::IPUBit:
+      return autocast_ipu_ks;
+    case BackendComponent::HPUBit:
+      return autocast_hpu_ks;
     case BackendComponent::CUDABit:
-    case BackendComponent::XLABit:
       return autocast_cuda_ks;
+    case BackendComponent::XLABit:
+      return autocast_xla_ks;
+    case BackendComponent::PrivateUse1Bit:
+      return autocast_privateuse1_ks;
     default:
       return DispatchKeySet();
   }
@@ -869,7 +906,10 @@ static inline DispatchKey legacyExtractDispatchKey(DispatchKeySet s) {
   // treatment;
   return (s - autograd_dispatch_keyset_with_ADInplaceOrView -
           autocast_dispatch_keyset -
-          DispatchKeySet({DispatchKey::PythonTLSSnapshot, DispatchKey::Python}))
+          DispatchKeySet(
+              {DispatchKey::Functionalize,
+               DispatchKey::PythonTLSSnapshot,
+               DispatchKey::Python}))
       .highestPriorityTypeId();
 }
 
@@ -886,12 +926,12 @@ template <class FuncType>
 using remove_DispatchKeySet_arg_from_func = guts::make_function_traits_t<
     typename guts::infer_function_traits_t<FuncType>::return_type,
     typename std::conditional_t<
-        std::is_same<
+        std::is_same_v<
             DispatchKeySet,
             typename guts::typelist::head_with_default_t<
                 void,
                 typename guts::infer_function_traits_t<
-                    FuncType>::parameter_types>>::value,
+                    FuncType>::parameter_types>>,
         guts::typelist::drop_if_nonempty_t<
             typename guts::infer_function_traits_t<FuncType>::parameter_types,
             1>,

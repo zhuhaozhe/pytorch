@@ -19,7 +19,13 @@
 #define IS_SPMM_AVAILABLE() 0
 #endif
 
-#if IS_SPMM_AVAILABLE()
+#if defined(USE_ROCM) && ROCM_VERSION >= 50200
+#define IS_SPMM_HIP_AVAILABLE() 1
+#else
+#define IS_SPMM_HIP_AVAILABLE() 0
+#endif
+
+#if IS_SPMM_AVAILABLE() || IS_SPMM_HIP_AVAILABLE()
 #include <library_types.h>
 #endif
 
@@ -63,7 +69,7 @@ const char* cusparseGetErrorString(cusparseStatus_t status) {
 }
 #endif
 
-namespace at { namespace native { namespace sparse { namespace cuda {
+namespace at::native::sparse::cuda {
 
 void Xcoo2csr(const int *coorowind, int64_t nnz, int64_t m, int *csrrowptr) {
   TORCH_CHECK((m <= INT_MAX) && (nnz <= INT_MAX),
@@ -86,7 +92,7 @@ cusparseOperation_t convertTransToCusparseOperation(char trans) {
   }
 }
 
-#if IS_SPMM_AVAILABLE()
+#if IS_SPMM_AVAILABLE() || IS_SPMM_HIP_AVAILABLE()
 
 namespace {
 template<typename T>
@@ -157,9 +163,9 @@ void _csrmm2(
     descA, descB,
     beta,
     descC,
-    cusparse_value_type,  /* data type in which the computation is executed */
-    CUSPARSE_CSRMM_ALG1,  /* default computing algorithm for CSR sparse matrix format */
-    &bufferSize           /* output */
+    cusparse_value_type,      /* data type in which the computation is executed */
+    CUSPARSE_SPMM_CSR_ALG1,   /* default computing algorithm for CSR sparse matrix format */
+    &bufferSize               /* output */
   ));
 
   auto& allocator = *c10::cuda::CUDACachingAllocator::get();
@@ -171,9 +177,9 @@ void _csrmm2(
     descA, descB,
     beta,
     descC,
-    cusparse_value_type,  /* data type in which the computation is executed */
-    CUSPARSE_CSRMM_ALG1,  /* default computing algorithm for CSR sparse matrix format */
-    dataPtr.get()         /* external buffer */
+    cusparse_value_type,      /* data type in which the computation is executed */
+    CUSPARSE_SPMM_CSR_ALG1,   /* default computing algorithm for CSR sparse matrix format */
+    dataPtr.get()             /* external buffer */
   ));
 
   TORCH_CUDASPARSE_CHECK(cusparseDestroySpMat(descA));
@@ -518,4 +524,4 @@ void XcoosortByRow(int64_t m, int64_t n, int64_t nnz, int *cooRows, int *cooCols
 }
 
 
-}}}} // namespace at::native::sparse::cuda
+} // namespace at::native::sparse::cuda

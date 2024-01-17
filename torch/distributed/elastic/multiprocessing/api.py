@@ -35,6 +35,8 @@ IS_MACOS = sys.platform == "darwin"
 
 log = logging.getLogger(__name__)
 
+__all__ = ["SignalException", "Std", "to_map", "RunProcsResult", "PContext", "get_std_cm", "MultiprocessContext",
+           "SubprocessHandler", "SubprocessContext"]
 
 class SignalException(Exception):
     """
@@ -61,9 +63,7 @@ def _terminate_process_handler(signum: int, frame: Optional[FrameType]) -> None:
 
 
 def _get_kill_signal() -> signal.Signals:
-    """
-    Get the kill signal. SIGKILL for unix, CTRL_C_EVENT for windows.
-    """
+    """Get the kill signal. SIGKILL for unix, CTRL_C_EVENT for windows."""
     if IS_WINDOWS:
         return signal.CTRL_C_EVENT  # type: ignore[attr-defined] # noqa: F821
     else:
@@ -71,9 +71,7 @@ def _get_kill_signal() -> signal.Signals:
 
 
 def _get_default_signal() -> signal.Signals:
-    """
-    Get the default termination signal. SIGTERM for unix, CTRL_C_EVENT for windows.
-    """
+    """Get the default termination signal. SIGTERM for unix, CTRL_C_EVENT for windows."""
     if IS_WINDOWS:
         return signal.CTRL_C_EVENT  # type: ignore[attr-defined] # noqa: F821
     else:
@@ -105,7 +103,6 @@ class Std(IntFlag):
     def from_str(cls, vm: str) -> Union["Std", Dict[int, "Std"]]:
         """
         Example:
-
         ::
 
          from_str("0") -> Std.NONE
@@ -115,11 +112,10 @@ class Std(IntFlag):
         Any other input raises an exception
         """
 
-        def to_std(v):
-            v = int(v)
-            for s in Std:
-                if s == v:
-                    return s
+        def to_std(v: str) -> Std:  # type: ignore[return]
+            s = Std(int(v))
+            if s in Std:
+                return s
             # return None -> should NEVER reach here since we regex check input
 
         if re.match(_VALUE_REGEX, vm):  # vm is a number (e.g. 0)
@@ -145,7 +141,6 @@ def to_map(
     method that converts a value or mapping into a mapping.
 
     Example:
-
     ::
 
      to_map(Std.OUT, local_world_size=2) # returns: {0: Std.OUT, 1: Std.OUT}
@@ -164,8 +159,7 @@ def to_map(
 @dataclass
 class RunProcsResult:
     """
-    Results of a completed run of processes started with ``start_processes()``.
-    Returned by ``PContext``.
+    Results of a completed run of processes started with ``start_processes()``. Returned by ``PContext``.
 
     Note the following:
 
@@ -187,9 +181,9 @@ class RunProcsResult:
 
 class PContext(abc.ABC):
     """
-    The base class that standardizes operations over a set of processes
-    that are launched via different mechanisms. The name ``PContext``
-    is intentional to disambiguate with ``torch.multiprocessing.ProcessContext``.
+    The base class that standardizes operations over a set of processes that are launched via different mechanisms.
+
+    The name ``PContext`` is intentional to disambiguate with ``torch.multiprocessing.ProcessContext``.
 
     .. warning:: stdouts and stderrs should ALWAYS be a superset of
                  tee_stdouts and tee_stderrs (respectively) this is b/c
@@ -207,6 +201,7 @@ class PContext(abc.ABC):
         tee_stdouts: Dict[int, str],
         tee_stderrs: Dict[int, str],
         error_files: Dict[int, str],
+        log_line_prefixes: Optional[Dict[int, str]] = None,
     ):
         self.name = name
         # validate that all mappings have the same number of keys and
@@ -223,13 +218,11 @@ class PContext(abc.ABC):
         self.error_files = error_files
         self.nprocs = nprocs
 
-        self._stdout_tail = TailLog(name, tee_stdouts, sys.stdout)
-        self._stderr_tail = TailLog(name, tee_stderrs, sys.stderr)
+        self._stdout_tail = TailLog(name, tee_stdouts, sys.stdout, log_line_prefixes)
+        self._stderr_tail = TailLog(name, tee_stderrs, sys.stderr, log_line_prefixes)
 
     def start(self) -> None:
-        """
-        Start processes using parameters defined in the constructor.
-        """
+        """Start processes using parameters defined in the constructor."""
         signal.signal(signal.SIGTERM, _terminate_process_handler)
         signal.signal(signal.SIGINT, _terminate_process_handler)
         if not IS_WINDOWS:
@@ -241,15 +234,13 @@ class PContext(abc.ABC):
 
     @abc.abstractmethod
     def _start(self) -> None:
-        """
-        Start processes using strategy defined in a particular context.
-        """
+        """Start processes using strategy defined in a particular context."""
         raise NotImplementedError()
 
     @abc.abstractmethod
     def _poll(self) -> Optional[RunProcsResult]:
         """
-        Polls the run status of the processes running under this context.
+        Poll the run status of the processes running under this context.
         This method follows an "all-or-nothing" policy and returns
         a ``RunProcessResults`` object if either all processes complete
         successfully or any process fails. Returns ``None`` if
@@ -259,13 +250,13 @@ class PContext(abc.ABC):
 
     def wait(self, timeout: float = -1, period: float = 1) -> Optional[RunProcsResult]:
         """
-        Waits for the specified ``timeout`` seconds, polling every ``period`` seconds
+        Wait for the specified ``timeout`` seconds, polling every ``period`` seconds
         for the processes to be done. Returns ``None`` if the processes are still running
         on timeout expiry. Negative timeout values are interpreted as "wait-forever".
         A timeout value of zero simply queries the status of the processes (e.g. equivalent
         to a poll).
 
-        ..note: Multiprocesing library registers SIGTERM and SIGINT signal handlers that raise
+        ..note: Multiprocessing library registers SIGTERM and SIGINT signal handlers that raise
                 ``SignalException`` when the signals received. It is up to the consumer of the code
                 to properly handle the exception. It is important not to swallow the exception otherwise
                 the process would not terminate. Example of the typical workflow can be:
@@ -282,7 +273,6 @@ class PContext(abc.ABC):
         received signal. If child processes will not terminate in the timeout time, the process will send
         the SIGKILL.
         """
-
         if timeout == 0:
             return self._poll()
 
@@ -300,9 +290,7 @@ class PContext(abc.ABC):
 
     @abc.abstractmethod
     def pids(self) -> Dict[int, int]:
-        """
-        Returns pids of processes mapped by their respective local_ranks
-        """
+        """Return pids of processes mapped by their respective local_ranks."""
         raise NotImplementedError()
 
     @abc.abstractmethod
@@ -321,7 +309,7 @@ class PContext(abc.ABC):
         meta resources (e.g. redirect, error_file files).
 
         Args:
-            death_sig: Death signal to terminate porcesses.
+            death_sig: Death signal to terminate processes.
             timeout: Time to wait for processes to finish, if process is
                 still alive after this time, it will be terminated via SIGKILL.
         """
@@ -372,9 +360,7 @@ def _wrap(
 
 
 class MultiprocessContext(PContext):
-    """
-    ``PContext`` holding worker processes invoked as a function.
-    """
+    """``PContext`` holding worker processes invoked as a function."""
 
     def __init__(
         self,
@@ -388,6 +374,7 @@ class MultiprocessContext(PContext):
         tee_stderrs: Dict[int, str],
         error_files: Dict[int, str],
         start_method: str,
+        log_line_prefixes: Optional[Dict[int, str]] = None,
     ):
         super().__init__(
             name,
@@ -399,6 +386,7 @@ class MultiprocessContext(PContext):
             tee_stdouts,
             tee_stderrs,
             error_files,
+            log_line_prefixes,
         )
 
         self.start_method = start_method
@@ -489,11 +477,13 @@ class MultiprocessContext(PContext):
             failed_proc = self._pc.processes[failed_local_rank]
             error_filepath = self.error_files[failed_local_rank]
 
-            log.error(
-                f"failed (exitcode: {failed_proc.exitcode})"
-                f" local_rank: {failed_local_rank} (pid: {e.pid})"
-                f" of fn: {fn_name} (start_method: {self.start_method})",
-                exc_info=True,
+            log.exception(
+                "failed (exitcode: %s)"
+                " local_rank: %s (pid: %s)"
+                " of fn: %s (start_method: %s)",
+                failed_proc.exitcode,
+                failed_local_rank, e.pid,
+                fn_name, self.start_method,
             )
 
             self.close()
@@ -512,19 +502,19 @@ class MultiprocessContext(PContext):
 
     def pids(self) -> Dict[int, int]:
         assert self._pc is not None  # assertion for mypy type checking
-        return {local_rank: pid for local_rank, pid in enumerate(self._pc.pids())}
+        return dict(enumerate(self._pc.pids()))
 
     def _close(self, death_sig: signal.Signals, timeout: int = 30) -> None:
         if not self._pc:
             return
         for proc in self._pc.processes:
             if proc.is_alive():
-                log.warning(f"Closing process {proc.pid} via signal {death_sig.name}")
+                log.warning("Closing process %s via signal %s", proc.pid, death_sig.name)
                 try:
                     os.kill(proc.pid, death_sig)
                 except ProcessLookupError:
                     # If the process exited because of some reason,
-                    # `ProcessLookupError` will be rasied, it is safe to ignore it.
+                    # `ProcessLookupError` will be raised, it is safe to ignore it.
                     pass
         end = time.monotonic() + timeout
         for proc in self._pc.processes:
@@ -535,13 +525,14 @@ class MultiprocessContext(PContext):
         for proc in self._pc.processes:
             if proc.is_alive():
                 log.warning(
-                    f"Unable to shutdown process {proc.pid} via {death_sig}, forcefully exitting via {_get_kill_signal()}"
+                    "Unable to shutdown process %s via %s, forcefully exiting via %s",
+                    proc.pid, death_sig, _get_kill_signal()
                 )
                 try:
                     os.kill(proc.pid, _get_kill_signal())
                 except ProcessLookupError:
                     # If the process exited because of some reason,
-                    # `ProcessLookupError` will be rasied, it is safe to ignore it.
+                    # `ProcessLookupError` will be raised, it is safe to ignore it.
                     pass
             proc.join()
 
@@ -570,6 +561,9 @@ class SubprocessHandler:
         self.proc: subprocess.Popen = self._popen(args_str, env_vars)
 
     def _popen(self, args: Tuple, env: Dict[str, str]) -> subprocess.Popen:
+        kwargs: Dict[str, Any] = {}
+        if not IS_WINDOWS:
+            kwargs['start_new_session'] = True
         return subprocess.Popen(
             # pyre-fixme[6]: Expected `Union[typing.Sequence[Union[_PathLike[bytes],
             #  _PathLike[str], bytes, str]], bytes, str]` for 1st param but got
@@ -578,12 +572,16 @@ class SubprocessHandler:
             env=env,
             stdout=self._stdout,
             stderr=self._stderr,
+            **kwargs
         )
 
     def close(self, death_sig: Optional[signal.Signals] = None) -> None:
         if not death_sig:
             death_sig = _get_default_signal()
-        self.proc.send_signal(death_sig)
+        if IS_WINDOWS:
+            self.proc.send_signal(death_sig)
+        else:
+            os.killpg(self.proc.pid, death_sig)
         if self._stdout:
             self._stdout.close()
         if self._stderr:
@@ -591,9 +589,7 @@ class SubprocessHandler:
 
 
 class SubprocessContext(PContext):
-    """
-    ``PContext`` holding worker processes invoked as a binary.
-    """
+    """``PContext`` holding worker processes invoked as a binary."""
 
     def __init__(
         self,
@@ -606,6 +602,7 @@ class SubprocessContext(PContext):
         tee_stdouts: Dict[int, str],
         tee_stderrs: Dict[int, str],
         error_files: Dict[int, str],
+        log_line_prefixes: Optional[Dict[int, str]] = None,
     ):
         super().__init__(
             name,
@@ -617,6 +614,7 @@ class SubprocessContext(PContext):
             tee_stdouts,
             tee_stderrs,
             error_files,
+            log_line_prefixes,
         )
 
         # state vector; _vdone[local_rank] -> is local_rank finished or not
@@ -669,9 +667,10 @@ class SubprocessContext(PContext):
             if result.is_failed():
                 first_failure = min(result.failures.values(), key=lambda f: f.timestamp)
                 log.error(
-                    f"failed (exitcode: {first_failure.exitcode})"
-                    f" local_rank: {first_failure.local_rank} (pid: {first_failure.pid})"
-                    f" of binary: {self.entrypoint}"
+                    "failed (exitcode: %s)"
+                    " local_rank: %s (pid: %s)"
+                    " of binary: %s",
+                    first_failure.exitcode, first_failure.local_rank, first_failure.pid, self.entrypoint
                 )
             else:
                 # Populate return with dummy values. This provides consistency with MultiprocessingHandler
@@ -695,7 +694,7 @@ class SubprocessContext(PContext):
         for handler in self.subprocess_handlers.values():
             if handler.proc.poll() is None:
                 log.warning(
-                    f"Sending process {handler.proc.pid} closing signal {death_sig.name}"
+                    "Sending process %s closing signal %s", handler.proc.pid, death_sig.name
                 )
                 handler.close(death_sig=death_sig)
         end = time.monotonic() + timeout
@@ -712,7 +711,8 @@ class SubprocessContext(PContext):
         for handler in self.subprocess_handlers.values():
             if handler.proc.poll() is None:
                 log.warning(
-                    f"Unable to shutdown process {handler.proc.pid} via {death_sig}, forcefully exitting via {_get_kill_signal()}"
+                    "Unable to shutdown process %s via %s, forcefully exiting via %s",
+                    handler.proc.pid, death_sig, _get_kill_signal()
                 )
                 handler.close(death_sig=_get_kill_signal())
                 handler.proc.wait()

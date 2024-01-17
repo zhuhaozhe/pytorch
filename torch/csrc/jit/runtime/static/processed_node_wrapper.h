@@ -3,8 +3,7 @@
 #include <ATen/ATen.h>
 #include <torch/csrc/jit/runtime/static/impl.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 // The following class facilitates code reuse between ProcessedNodeInputWrapper
 // and ProcessedNodeOutputWrapper via CRTP
@@ -27,7 +26,7 @@ class ProcessedNodeWrapperBase {
         : container_(container), idx_(start_idx) {}
 
     ProcessedNodeWrapperBaseIter& operator++() {
-      DCHECK_NE(idx_, container_->size());
+      TORCH_DCHECK_NE(idx_, container_->size());
       ++idx_;
       return *this;
     }
@@ -51,7 +50,7 @@ class ProcessedNodeWrapperBase {
     friend bool operator==(
         ProcessedNodeWrapperBaseIter lhs,
         ProcessedNodeWrapperBaseIter rhs) {
-      DCHECK_EQ(lhs.container_, rhs.container_);
+      TORCH_DCHECK_EQ(lhs.container_, rhs.container_);
       return lhs.idx_ == rhs.idx_;
     }
 
@@ -209,5 +208,4 @@ class ProcessedNodeOutputWrapper
   }
 };
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

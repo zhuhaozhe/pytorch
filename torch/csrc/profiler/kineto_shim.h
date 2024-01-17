@@ -42,10 +42,8 @@ namespace kineto {
 // -- Interface (Does not require Kineto) -------------------------------------
 // ----------------------------------------------------------------------------
 struct DeviceAndResource {
-#ifdef USE_KINETO
   int32_t device;
   int32_t resource;
-#endif // USE_KINETO
 };
 const DeviceAndResource kineto_ids();
 
@@ -110,7 +108,9 @@ struct ActivityTraceWrapper {
 
  private:
   std::unique_ptr<interface_trace_t> trace_;
+#ifdef USE_KINETO
   bool saved_ = false; // Kineto's save is destructive
+#endif
 };
 
 using ActivitySet = std::set<torch::autograd::profiler::ActivityType>;
@@ -126,15 +126,19 @@ void popCorrelationId();
 void popUserCorrelationId();
 void recordThreadInfo();
 
+void logInvariantViolation(
+    const std::string& assertion,
+    const std::string& error,
+    const std::string& profile_id,
+    const std::string& group_profile_id);
+
 } // namespace kineto
 } // namespace impl
 } // namespace profiler
 
 namespace autograd {
 namespace profiler {
-#ifdef USE_KINETO
 c10::DeviceType deviceTypeFromActivity(libkineto::ActivityType activity_type);
-#endif // USE_KINETO
 
 TORCH_API void addMetadataJson(
     const std::string& key,

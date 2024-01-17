@@ -1,15 +1,20 @@
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/cuda/CUDAConfig.h>  // for the definition of AT_CUDNN_ENABLED
 
 #if AT_CUDNN_ENABLED()
 
-#include <ATen/native/cudnn/Macros.h>
+#include <ATen/core/Tensor.h>
+
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#else
+#include <ATen/ops/empty.h>
+#include <ATen/ops/empty_like.h>
+#include <ATen/ops/zeros.h>
+#endif
 
 #include <limits>
 #include <vector>
-#include <sstream>
-#include <functional>
-#include <ATen/ATen.h>
-#include <ATen/NativeFunctions.h>
 #include <ATen/Config.h>
 #include <ATen/cuda/CUDAGraphsUtils.cuh>
 #include <ATen/cuda/Exceptions.h>
@@ -53,10 +58,6 @@
 // the best algo and the updated descriptor. If we don't update the descriptor but just run
 // with the best algo, under the hood, cudnn will run with the slower kernel
 // since it sees fastest algorithm combination with a sub optimal mathType.
-
-// Note [blocklist fft algorithms for strided dgrad]
-// This is a workaround for a CuDNN bug that gave wrong results in certain strided convolution
-// gradient setups. Check Issue #16610 for bug details. Bug is there for CUDNN version < 7.5 .
 
 constexpr size_t operator "" _TiB(unsigned long long n) {
   return size_t(n) * 1024 * 1024 * 1024 * 1024;
@@ -131,7 +132,7 @@ struct Workspace {
     // Sometimes cuDNN returns a workspace size > 2^63, this could makes the allocation of
     // workspace fail with some 64bit indexing error instead of an OOM error. In such case,
     // we manually fail with OOM.
-    TORCH_CHECK_WITH(CUDAOutOfMemoryError, size < 1_TiB, "Not enough memory for workspace!");
+    TORCH_CHECK_WITH(OutOfMemoryError, size < 1_TiB, "Not enough memory for workspace!");
     data = c10::cuda::CUDACachingAllocator::raw_alloc(size);
   }
   Workspace(const Workspace&) = delete;
@@ -199,10 +200,11 @@ size_t getMaxWorkspaceSize(
 {
   size_t max_ws_size = 0;
   size_t max_block_size = 0;
-  size_t tmp_bytes = 0;  // Only used for filling pointer parameters that aren't used later
 
   const auto device = c10::cuda::current_device();
-  c10::cuda::CUDACachingAllocator::cacheInfo(device, &tmp_bytes, &max_block_size);
+  // For the native allocator, retrieves the size of the largest unused block.
+  // For cudaMallocAsync, see c10/cuda/CUDAMallocAsync.cpp:cacheInfo for details.
+  c10::cuda::CUDACachingAllocator::cacheInfo(device, &max_block_size);
 
   for (const auto i : c10::irange(n_algo)) {
     cudnnStatus_t err;
@@ -218,15 +220,6 @@ size_t getMaxWorkspaceSize(
 template<typename perf_t>
 std::vector<perf_t> getValidAlgorithms(perf_t *perfResults, const ConvolutionArgs& args, int n_algo) {
 
-// See Note [blocklist fft algorithms for strided dgrad]
-#if CUDNN_VERSION < 7500
-  bool blocklist = std::is_same<decltype(perfResults[0].algo), cudnnConvolutionBwdDataAlgo_t>::value;
-  int stride_dim = args.input.dim() - 2;
-  blocklist &= std::any_of(std::begin(args.params.stride),
-                            std::begin(args.params.stride) + stride_dim,
-                            [=](int n){return n != 1;});
-#endif
-
   std::vector<perf_t> result;
   result.reserve(n_algo);
   for (const auto i : c10::irange(n_algo)) {
@@ -236,16 +229,6 @@ std::vector<perf_t> getValidAlgorithms(perf_t *perfResults, const ConvolutionArg
     // Double check documentation for cudnnFindConvolutionForwardAlgorithmEx
     if (perf.status == CUDNN_STATUS_SUCCESS) {
       if (!args.params.deterministic || perf.determinism == CUDNN_DETERMINISTIC) {
-
-        // See Note [blocklist fft algorithms for strided dgrad]
-#if CUDNN_VERSION < 7500
-        bool skip = blocklist;
-        skip &= (static_cast<cudnnConvolutionBwdDataAlgo_t>(perfResults[i].algo) == CUDNN_CONVOLUTION_BWD_DATA_ALGO_FFT_TILING ||
-                  static_cast<cudnnConvolutionBwdDataAlgo_t>(perfResults[i].algo) == CUDNN_CONVOLUTION_BWD_DATA_ALGO_FFT);
-        if (skip) {
-          continue;
-        }
-#endif
 
         result.push_back(perf);
       }
@@ -486,11 +469,9 @@ public:
       perfResults[0].mathType = CUDNN_TENSOR_OP_MATH;
     } else {
       perfResults[0].mathType = CUDNN_DEFAULT_MATH;
-#if defined(CUDNN_VERSION) && CUDNN_VERSION >= 8000
       if (args.params.dataType == CUDNN_DATA_FLOAT && !args.params.allow_tf32) {
         perfResults[0].mathType = CUDNN_FMA_MATH;
       }
-#endif
     }
     search::getWorkspaceSize(args, perfResults[0].algo, &(perfResults[0].memory));
     return perfResults;
@@ -505,7 +486,7 @@ public:
       try {
         f(algoPerf);
         return;
-      } catch (c10::CUDAOutOfMemoryError &e) {
+      } catch (c10::OutOfMemoryError &e) {
         cudaGetLastError(); // clear CUDA error
       }
     }
@@ -516,7 +497,7 @@ public:
         f(algoPerf);
         cache.insert(args.params, algoPerf);
         return;
-      } catch (c10::CUDAOutOfMemoryError &e) {
+      } catch (c10::OutOfMemoryError &e) {
         cudaGetLastError(); // clear CUDA error
       } catch (c10::CuDNNError &e) {
         cudaGetLastError(); // clear CUDA error
@@ -530,7 +511,7 @@ inline Tensor allocate_workspace(size_t size, const Tensor &other) {
   // Sometimes cuDNN returns a workspace size > 2^63, this could makes the allocation of
   // workspace fail with some 64bit indexing error instead of an OOM error. In such case,
   // we manually fail with OOM.
-  TORCH_CHECK_WITH(CUDAOutOfMemoryError, size < 1_TiB, "Not enough memory for workspace!");
+  TORCH_CHECK_WITH(OutOfMemoryError, size < 1_TiB, "Not enough memory for workspace!");
   return at::empty({static_cast<int64_t>(size)}, other.options().dtype(kByte));
 }
 
@@ -603,14 +584,10 @@ static inline void split_batch_dim_to_32bit_out(
 }
 
 
-#if defined(CUDNN_VERSION) && CUDNN_VERSION >= 8000
 #define ASSERT_CORRECT_PRECISION(math_type)                                     \
 if (args.params.dataType == CUDNN_DATA_FLOAT) {                                 \
   TORCH_INTERNAL_ASSERT(args.params.allow_tf32 || math_type == CUDNN_FMA_MATH); \
 }
-#else
-#define ASSERT_CORRECT_PRECISION(math_type)
-#endif  // CUDNN_VERSION >= 8000
 
 
 // ---------------------------------------------------------------------
@@ -665,11 +642,7 @@ void raw_cudnn_convolution_forward_out_32bit(
 }
 
 
-#if !HAS_CUDNN_V8()
-void raw_cudnn_convolution_forward_out(
-#else
 void raw_cudnn_convolution_forward_out_v7(
-#endif
     const Tensor& output, const Tensor& input, const Tensor& weight,
     IntArrayRef padding, IntArrayRef stride, IntArrayRef dilation, int64_t groups,
     bool benchmark, bool deterministic, bool allow_tf32) {
@@ -717,21 +690,17 @@ void raw_cudnn_convolution_backward_input_out_32bit(
           &one, args.wdesc.desc(), weight.data_ptr(),
           args.odesc.desc(), grad_output.data_ptr(),
           args.cdesc.desc(), bwdDataAlgPerf.algo, workspace.data_ptr(), bwdDataAlgPerf.memory,
-          &zero, args.idesc.desc(), grad_input.data_ptr()),
+          &zero, args.idesc.desc(), grad_input.mutable_data_ptr()),
         args,
         "Additional pointer addresses: \n",
         "    grad_output: ", grad_output.data_ptr(), "\n",
-        "    grad_input: ", grad_input.data_ptr(), "\n",
+        "    grad_input: ", grad_input.mutable_data_ptr(), "\n",
         "Backward data algorithm: ", static_cast<int>(bwdDataAlgPerf.algo), "\n");
     }
   );
 }
 
-#if !HAS_CUDNN_V8()
-void raw_cudnn_convolution_backward_input_out(
-#else
 void raw_cudnn_convolution_backward_input_out_v7(
-#endif
     const at::Tensor& grad_input,
     const at::Tensor& grad_output,
     const at::Tensor& weight,
@@ -790,11 +759,7 @@ void raw_cudnn_convolution_backward_weight_out_32bit(
   );
 }
 
-#if !HAS_CUDNN_V8()
-void raw_cudnn_convolution_backward_weight_out(
-#else
 void raw_cudnn_convolution_backward_weight_out_v7(
-#endif
     const Tensor& grad_weight, const Tensor& grad_output, const Tensor& input,
     IntArrayRef padding, IntArrayRef stride, IntArrayRef dilation, int64_t groups,
     bool benchmark, bool deterministic, bool allow_tf32) {
@@ -846,12 +811,7 @@ void raw_cudnn_convolution_backward_weight_out_v7(
   TORCH_INTERNAL_ASSERT(false, "This case should not be dispatched to cuDNN.");
 }
 
-#if !HAS_CUDNN_V8()
-void raw_cudnn_convolution_add_relu_out(
-#else
 void raw_cudnn_convolution_add_relu_out_v7(
-#endif
-
     const Tensor& output,
     const Tensor& input,
     const Tensor& weight,

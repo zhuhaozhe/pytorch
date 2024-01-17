@@ -1,4 +1,5 @@
 #include <onnx/onnx_pb.h>
+#include <torch/csrc/onnx/back_compat.h>
 #include <torch/csrc/onnx/init.h>
 #include <torch/csrc/onnx/onnx.h>
 #include <torch/version.h>
@@ -14,7 +15,9 @@
 #include <torch/csrc/jit/passes/onnx/function_extraction.h>
 #include <torch/csrc/jit/passes/onnx/function_substitution.h>
 #include <torch/csrc/jit/passes/onnx/list_model_parameters.h>
+#include <torch/csrc/jit/passes/onnx/naming.h>
 #include <torch/csrc/jit/passes/onnx/onnx_log.h>
+#include <torch/csrc/jit/passes/onnx/pattern_conversion/autograd_function_process.h>
 #include <torch/csrc/jit/passes/onnx/pattern_conversion/pattern_conversion.h>
 #include <torch/csrc/jit/passes/onnx/pattern_conversion/pattern_encapsulation.h>
 #include <torch/csrc/jit/passes/onnx/peephole.h>
@@ -26,8 +29,7 @@
 #include <torch/csrc/jit/passes/onnx/unpack_quantized_weights.h>
 #include <torch/csrc/jit/serialization/export.h>
 
-namespace torch {
-namespace onnx {
+namespace torch::onnx {
 
 using namespace torch::jit;
 
@@ -45,13 +47,22 @@ void initONNXBindings(PyObject* module) {
                  const std::vector<at::Tensor>& tensors,
                  const python::IODescriptor& desc,
                  bool onnx_shape_inference,
-                 bool is_script) {
+                 bool is_script,
+                 int opset_version) {
                 ONNXAssignOutputShape(
-                    graph, tensors, desc, onnx_shape_inference, is_script);
+                    graph,
+                    tensors,
+                    desc,
+                    onnx_shape_inference,
+                    is_script,
+                    opset_version);
               }))
       .def(
           "_jit_pass_onnx_function_substitution",
           wrap_pybind_function(ONNXFunctionCallSubstitution))
+      .def(
+          "_jit_pass_onnx_autograd_function_process",
+          wrap_pybind_function(ONNXAutogradFunctionProcess))
       .def(
           "_jit_pass_onnx_peephole",
           ::torch::wrap_pybind_function([](std::shared_ptr<Graph>& graph,
@@ -127,7 +138,10 @@ void initONNXBindings(PyObject* module) {
                  std::map<std::string, IValue>& params_dict,
                  int opset_version) {
                 ONNXShapeTypeInference(graph, params_dict, opset_version);
-              }))
+              }),
+          py::arg("graph"),
+          py::arg("params_dict"),
+          py::arg("opset_version"))
       .def(
           "_jit_pass_onnx_set_dynamic_input_shape",
           ::torch::wrap_pybind_function(ONNXSetDynamicInputShape))
@@ -195,7 +209,7 @@ void initONNXBindings(PyObject* module) {
           "Enables or disables ONNX logging.")
       .def(
           "_jit_set_onnx_log_output_stream",
-          [](std::string stream_name = "stdout") -> void {
+          [](const std::string& stream_name = "stdout") -> void {
             std::shared_ptr<std::ostream> out;
             if (stream_name == "stdout") {
               out = std::shared_ptr<std::ostream>(
@@ -212,7 +226,7 @@ void initONNXBindings(PyObject* module) {
           "Set specific file stream for ONNX logging.")
       .def(
           "_jit_onnx_log",
-          [](py::args args) -> void {
+          [](const py::args& args) -> void {
             if (::torch::jit::onnx::is_log_enabled()) {
               auto& out = ::torch::jit::onnx::_get_log_output_stream();
               for (auto arg : args) {
@@ -221,15 +235,24 @@ void initONNXBindings(PyObject* module) {
               out << std::endl;
             }
           },
-          "Write `args` to the previously specified ONNX log stream.");
+          "Write `args` to the previously specified ONNX log stream.")
+      .def(
+          "_jit_pass_onnx_assign_scoped_names_for_node_and_value",
+          ::torch::wrap_pybind_function(
+              ::torch::jit::onnx::AssignScopedNamesForNodeAndValue),
+          "Assign informative scoped names for nodes and values.")
+      .def(
+          "_jit_onnx_create_full_scope_name",
+          ::torch::wrap_pybind_function(
+              ::torch::jit::onnx::ONNXScopeName::createFullScopeName),
+          "Create a full scope name from class name and variable name.");
 
   m.def(
       "_check_onnx_proto",
-      [](const std::string& proto_string, bool full_check) {
-        check_onnx_proto(proto_string, full_check);
-      },
-      py::arg("proto_string"),
-      py::arg("full_check") = false);
+      ::torch::wrap_pybind_function([](const std::string& proto_string) {
+        check_onnx_proto(proto_string);
+      }),
+      py::arg("proto_string"));
 
   auto onnx = m.def_submodule("_onnx");
   py::enum_<::ONNX_NAMESPACE::TensorProto_DataType>(onnx, "TensorProtoDataType")
@@ -249,7 +272,9 @@ void initONNXBindings(PyObject* module) {
       .value("UINT64", ::ONNX_NAMESPACE::TensorProto_DataType_UINT64)
       .value("COMPLEX64", ::ONNX_NAMESPACE::TensorProto_DataType_COMPLEX64)
       .value("COMPLEX128", ::ONNX_NAMESPACE::TensorProto_DataType_COMPLEX128)
-      .value("BFLOAT16", ::ONNX_NAMESPACE::TensorProto_DataType_BFLOAT16);
+      .value("BFLOAT16", ::ONNX_NAMESPACE::TensorProto_DataType_BFLOAT16)
+      .value("FLOAT8E4M3FN", ::torch::onnx::TensorProto_DataType_FLOAT8E4M3FN)
+      .value("FLOAT8E5M2", ::torch::onnx::TensorProto_DataType_FLOAT8E5M2);
 
   py::enum_<OperatorExportTypes>(onnx, "OperatorExportTypes")
       .value("ONNX", OperatorExportTypes::ONNX)
@@ -270,5 +295,4 @@ void initONNXBindings(PyObject* module) {
   onnx.attr("_CAFFE2_ATEN_FALLBACK") = false;
 #endif
 }
-} // namespace onnx
-} // namespace torch
+} // namespace torch::onnx

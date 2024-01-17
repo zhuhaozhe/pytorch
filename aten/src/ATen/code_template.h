@@ -18,9 +18,7 @@ namespace jit {
 // in the top level environment, and then recurses into a parent
 // environment if the key is not found.)
 struct TemplateEnv {
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
-  TemplateEnv() : parent(nullptr) {}
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+  TemplateEnv() = default;
   TemplateEnv(TemplateEnv& parent) : parent(&parent) {}
 
   using string_list = std::vector<std::string>;
@@ -88,7 +86,7 @@ struct TemplateEnv {
 
   std::unordered_map<std::string, std::string> strings_;
   std::unordered_map<std::string, string_list> lists_;
-  TemplateEnv* parent;
+  TemplateEnv* parent{nullptr};
 };
 
 /*
@@ -194,14 +192,14 @@ struct CodeTemplate {
       const string_list& strings,
       bool comma_before,
       bool comma_after) const {
-    if (comma_before && strings.size() > 0)
+    if (comma_before && !strings.empty())
       out << ", ";
     for (const auto i : c10::irange(strings.size())) {
       if (i > 0)
         out << ", ";
       out << strings[i];
     }
-    if (comma_after && strings.size() > 0)
+    if (comma_after && !strings.empty())
       out << ", ";
   }
   // These indentation functions follow the convention that they never emit
@@ -209,8 +207,7 @@ struct CodeTemplate {
   // or trailing newlines. It's the responsibility of the calling function
   // to indent correctly in the context.
   void emitIndent(std::ostream& out, size_t indent) const {
-    for (const auto i : c10::irange(indent)) {
-      (void)i; // Suppress unused variable warning
+    for (C10_UNUSED const auto i : c10::irange(indent)) {
       out << " ";
     }
   }

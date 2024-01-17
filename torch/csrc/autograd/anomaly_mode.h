@@ -4,8 +4,7 @@
 #include <memory>
 #include <string>
 
-namespace torch {
-namespace autograd {
+namespace torch::autograd {
 
 // forward declaration of Node from function.h
 struct Node;
@@ -14,12 +13,17 @@ struct TORCH_API AnomalyMode {
   static bool is_enabled() {
     return _enabled;
   }
-  static void set_enabled(bool enabled) {
+  static bool should_check_nan() {
+    return _check_nan;
+  }
+  static void set_enabled(bool enabled, bool check_nan = true) {
     _enabled = enabled;
+    _check_nan = check_nan;
   }
 
  private:
   static bool _enabled;
+  static bool _check_nan;
 };
 
 /// A RAII guard that enables Anomaly Detection Mode.
@@ -46,8 +50,11 @@ struct TORCH_API AnomalyMode {
 /// @endcode
 class TORCH_API DetectAnomalyGuard {
  public:
-  DetectAnomalyGuard();
+  DetectAnomalyGuard(bool check_nan = true);
   ~DetectAnomalyGuard();
+
+ private:
+  bool prev_check_nan_;
 };
 
 struct TORCH_API AnomalyMetadata {
@@ -61,5 +68,4 @@ struct TORCH_API AnomalyMetadata {
   std::shared_ptr<Node> parent_;
 };
 
-} // namespace autograd
-} // namespace torch
+} // namespace torch::autograd

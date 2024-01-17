@@ -8,12 +8,10 @@
 #include <torch/csrc/Types.h>
 #include <torch/csrc/cuda/THCP.h>
 #include <torch/csrc/cuda/nccl.h>
+#include <torch/csrc/utils/pybind.h>
 
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/util/irange.h>
-
-#include <sstream>
-#include <unordered_map>
 
 using namespace at;
 using namespace torch;
@@ -24,6 +22,12 @@ static const char* COMM_CAPSULE_NAME = "torch.cuda.nccl.Communicator";
 
 PyObject* THCPModule_nccl_version(PyObject* self, PyObject* args) {
   return PyInt_FromLong(version());
+}
+
+PyObject* THCPModule_nccl_version_suffix(PyObject* self, PyObject* args) {
+  HANDLE_TH_ERRORS
+  return PyBytes_FromString(version_suffix());
+  END_HANDLE_TH_ERRORS
 }
 
 PyObject* THCPModule_nccl_unique_id(PyObject* self, PyObject* args) {
@@ -104,11 +108,13 @@ PyObject* THCPModule_nccl_init_rank(PyObject* self, PyObject* args) {
           args, "is#i:nccl_init_rank", &nranks, &id, &id_len, &rank)) {
     return nullptr;
   }
-  THPUtils_assert(
+  TORCH_CHECK(
       id_len == NCCL_UNIQUE_ID_BYTES,
-      "invalid unqiue_id (expected %d bytes, got %zd)",
+      "invalid unqiue_id (expected ",
       NCCL_UNIQUE_ID_BYTES,
-      id_len);
+      " bytes, got ",
+      id_len,
+      ")");
 
   ncclUniqueId commId;
   memcpy(&commId, id, NCCL_UNIQUE_ID_BYTES);
@@ -203,7 +209,7 @@ PyObject* THCPModule_nccl_broadcast(PyObject* self, PyObject* args) {
   }
 
   std::vector<at::Tensor> inputs = extract_tensors(_inputs);
-  THPUtils_assert(root >= 0 && (size_t)root < inputs.size(), "invalid root");
+  TORCH_CHECK(root >= 0 && (size_t)root < inputs.size(), "invalid root");
   auto streams = unpack_streams(_streams, inputs.size());
   auto user_comms = unpack_comms(_comms, inputs.size());
 
@@ -280,9 +286,11 @@ PyObject* THCPModule_nccl_reduce_scatter(PyObject* self, PyObject* args) {
 }
 
 static inline at::Tensor extract_tensor(PyObject* obj) {
-  if (!THPVariable_Check(obj)) {
-    throw torch::TypeError("expected Tensor (got %s)", Py_TYPE(obj)->tp_name);
-  }
+  TORCH_CHECK_TYPE(
+      THPVariable_Check(obj),
+      "expected Tensor (got ",
+      Py_TYPE(obj)->tp_name,
+      ")");
   return THPVariable_Unpack(obj);
 }
 
@@ -291,14 +299,20 @@ static inline std::vector<at::Tensor> extract_tensors(PyObject* obj) {
   if (!seq)
     throw python_error();
 
+  const Py_ssize_t length = PySequence_Fast_GET_SIZE(seq.get());
   std::vector<at::Tensor> list;
-  Py_ssize_t length = PySequence_Fast_GET_SIZE(seq.get());
+  if (length >= 0) {
+    list.reserve(length);
+  }
   for (Py_ssize_t i = 0; i < length; i++) {
     PyObject* item = PySequence_Fast_GET_ITEM(seq.get(), i);
-    if (!THPVariable_Check(item)) {
-      throw torch::TypeError(
-          "expected Tensor at %d (got %s)", (int)i, Py_TYPE(item)->tp_name);
-    }
+    TORCH_CHECK_TYPE(
+        THPVariable_Check(item),
+        "expected Tensor at ",
+        i,
+        " (got ",
+        Py_TYPE(item)->tp_name,
+        ")");
     list.emplace_back(THPVariable_Unpack(item));
   }
   return list;

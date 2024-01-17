@@ -26,13 +26,14 @@ static PyObject* THPVariable_pynew(
   const char* name = nullptr;
 
   // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays)
-  const char* accepted_args[] = {
+  constexpr const char* accepted_args[] = {
       "data", "requires_grad", "volatile", "_grad_fn", "name", nullptr};
   if (!PyArg_ParseTupleAndKeywords(
           args,
           kwds,
           "|ObbOz",
-          (char**)accepted_args,
+          // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+          const_cast<char**>(accepted_args),
           &data,
           &requires_grad,
           &is_volatile,
@@ -130,6 +131,7 @@ PyTypeObject THPLegacyVariableType = {
     nullptr, /* tp_getattro */
     nullptr, /* tp_setattro */
     nullptr, /* tp_as_buffer */
+    // NOLINTNEXTLINE(misc-redundant-expression)
     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /* tp_flags */
     nullptr, /* tp_doc */
     nullptr, /* tp_traverse */

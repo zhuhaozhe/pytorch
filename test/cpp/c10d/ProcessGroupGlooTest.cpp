@@ -17,8 +17,8 @@
 #include <torch/cuda.h>
 
 #include <c10/util/irange.h>
-#include <c10d/FileStore.hpp>
-#include <c10d/ProcessGroupGloo.hpp>
+#include <torch/csrc/distributed/c10d/FileStore.hpp>
+#include <torch/csrc/distributed/c10d/ProcessGroupGloo.hpp>
 #include "TestUtils.hpp"
 
 using namespace c10d::test;
@@ -47,7 +47,7 @@ class SignalTest {
     });
   }
 
-  c10::intrusive_ptr<::c10d::ProcessGroup::Work> run(int rank, int size) {
+  c10::intrusive_ptr<::c10d::Work> run(int rank, int size) {
     auto store = c10::make_intrusive<::c10d::FileStore>(path_, size);
 
     auto options = ::c10d::ProcessGroupGloo::Options::create();
@@ -65,7 +65,7 @@ class SignalTest {
     };
 
     // Loop until an exception happens
-    c10::intrusive_ptr<::c10d::ProcessGroup::Work> work;
+    c10::intrusive_ptr<::c10d::Work> work;
     while (true) {
       work = pg.allreduce(tensors);
       try {
@@ -85,7 +85,7 @@ class SignalTest {
   Semaphore sem_;
 };
 
-c10::intrusive_ptr<::c10d::ProcessGroup::Work> testSignal(
+c10::intrusive_ptr<::c10d::Work> testSignal(
     const std::string& path,
     int signal) {
   Fork fork;
@@ -110,7 +110,7 @@ class ProcessGroupGlooDelayed : public ::c10d::ProcessGroupGloo {
       c10::intrusive_ptr<Options> options)
       : ProcessGroupGloo(store, rank, size, options) {}
 
-  c10::intrusive_ptr<::c10d::ProcessGroup::Work> send(
+  c10::intrusive_ptr<::c10d::Work> send(
       std::vector<at::Tensor>& tensors,
       int dstRank,
       int tag) override {
@@ -192,7 +192,7 @@ std::vector<std::vector<at::Tensor>> copyTensors(
 }
 
 std::vector<std::vector<at::Tensor>> waitWork(
-    std::vector<c10::intrusive_ptr<c10d::ProcessGroup::Work>> works) {
+    std::vector<c10::intrusive_ptr<c10d::Work>> works) {
   std::vector<std::vector<at::Tensor>> outputTensors;
   for (auto& work : works) {
     try {
@@ -206,7 +206,7 @@ std::vector<std::vector<at::Tensor>> waitWork(
 }
 
 std::vector<std::vector<at::Tensor>> waitFuture(
-    std::vector<c10::intrusive_ptr<c10d::ProcessGroup::Work>> works) {
+    std::vector<c10::intrusive_ptr<c10d::Work>> works) {
   std::vector<std::vector<at::Tensor>> outputTensors;
   for (auto& work : works) {
     auto fut = work->getFuture();
@@ -258,7 +258,10 @@ void checkProfiledEvents(
   }
 }
 
-void testAllreduce(const std::string& path, const at::DeviceType b) {
+void testAllreduce(
+    const std::string& path,
+    const at::DeviceType b,
+    const at::ScalarType dtype = at::kFloat) {
   const auto size = 4;
   auto tests = CollectiveTest::initialize(path, size);
 
@@ -267,14 +270,14 @@ void testAllreduce(const std::string& path, const at::DeviceType b) {
   std::vector<std::vector<int64_t>> allShapes;
   std::vector<int64_t> shapes = {16, 16};
   for (const auto i : c10::irange(size)) {
-    auto tensor = at::ones(shapes, b) * i;
+    auto tensor = at::ones(shapes, at::dtype(dtype).device(b)) * i;
     std::vector<int64_t> shapesVec = shapes;
     allShapes.emplace_back(std::move(shapesVec));
     inputs[i] = std::vector<at::Tensor>({tensor});
   }
 
   // Kick off work
-  std::vector<c10::intrusive_ptr<::c10d::ProcessGroup::Work>> work(size);
+  std::vector<c10::intrusive_ptr<::c10d::Work>> work(size);
   const char* GLOO_ALLREDUCE_STR = "gloo:all_reduce";
   enableProfilerLegacy(ProfilerConfig(
       ProfilerState::CPU, /* report_input_shapes */ true, false));
@@ -291,7 +294,7 @@ void testAllreduce(const std::string& path, const at::DeviceType b) {
   // Verify outputs
   const auto expected = (size * (size - 1)) / 2;
   for (const auto i : c10::irange(size)) {
-    auto& tensor = outputs[i][0];
+    auto tensor = outputs[i][0].to(at::kFloat);
     auto data = tensor.data_ptr<float>();
     for (const auto j : c10::irange(tensor.numel())) {
       EXPECT_EQ(data[j], expected);
@@ -303,7 +306,8 @@ void testAllreduce(const std::string& path, const at::DeviceType b) {
 // This should go away as we deprecate it.
 void testAllreduceUsingWorkAPI(
     const std::string& path,
-    const at::DeviceType b) {
+    const at::DeviceType b,
+    const at::ScalarType dtype = at::kFloat) {
   const auto size = 4;
   auto tests = CollectiveTest::initialize(path, size);
 
@@ -312,14 +316,14 @@ void testAllreduceUsingWorkAPI(
   std::vector<std::vector<int64_t>> allShapes;
   std::vector<int64_t> shapes = {16, 16};
   for (const auto i : c10::irange(size)) {
-    auto tensor = at::ones(shapes, b) * i;
+    auto tensor = at::ones(shapes, at::dtype(dtype).device(b)) * i;
     std::vector<int64_t> shapesVec = shapes;
     allShapes.emplace_back(std::move(shapesVec));
     inputs[i] = std::vector<at::Tensor>({tensor});
   }
 
   // Kick off work
-  std::vector<c10::intrusive_ptr<::c10d::ProcessGroup::Work>> work(size);
+  std::vector<c10::intrusive_ptr<::c10d::Work>> work(size);
   const char* GLOO_ALLREDUCE_STR = "gloo:all_reduce";
   enableProfilerLegacy(ProfilerConfig(
       ProfilerState::CPU, /* report_input_shapes */ true, false));
@@ -336,7 +340,7 @@ void testAllreduceUsingWorkAPI(
   // Verify outputs
   const auto expected = (size * (size - 1)) / 2;
   for (const auto i : c10::irange(size)) {
-    auto& tensor = outputs[i][0];
+    auto tensor = outputs[i][0].to(at::kFloat);
     auto data = tensor.data_ptr<float>();
     for (const auto j : c10::irange(tensor.numel())) {
       EXPECT_EQ(data[j], expected);
@@ -344,7 +348,10 @@ void testAllreduceUsingWorkAPI(
   }
 }
 
-void testBroadcast(const std::string& path, const at::DeviceType b) {
+void testBroadcast(
+    const std::string& path,
+    const at::DeviceType b,
+    const at::ScalarType dtype = at::kFloat) {
   const auto size = 2;
   const auto stride = 2;
   auto tests = CollectiveTest::initialize(path, size);
@@ -366,7 +373,8 @@ void testBroadcast(const std::string& path, const at::DeviceType b) {
           if (b == at::DeviceType::CUDA) {
             deviceGuard.reset_device(at::Device(at::kCUDA, l));
           }
-          inputs[k][l] = at::ones(shapes, b) * (k * stride + l);
+          inputs[k][l] =
+              at::ones(shapes, at::dtype(dtype).device(b)) * (k * stride + l);
         }
       }
 
@@ -378,7 +386,7 @@ void testBroadcast(const std::string& path, const at::DeviceType b) {
       const char* GLOO_BROADCAST_STR = "gloo:broadcast";
       enableProfilerLegacy(ProfilerConfig(
           ProfilerState::CPU, /* report_input_shapes */ true, false));
-      std::vector<c10::intrusive_ptr<::c10d::ProcessGroup::Work>> work(size);
+      std::vector<c10::intrusive_ptr<::c10d::Work>> work(size);
 
       for (const auto i : c10::irange(size)) {
         work[i] = tests[i].getProcessGroup().broadcast(inputs[i], options);
@@ -395,7 +403,7 @@ void testBroadcast(const std::string& path, const at::DeviceType b) {
       const auto expected = (i * stride + j);
       for (const auto k : c10::irange(size)) {
         for (const auto l : c10::irange(stride)) {
-          auto& tensor = outputs[k][l];
+          auto tensor = outputs[k][l].to(at::kFloat);
           auto data = tensor.data_ptr<float>();
           for (const auto n : c10::irange(tensor.numel())) {
             EXPECT_EQ(data[n], expected);
@@ -446,7 +454,7 @@ void testAlltoall(const std::string& path, const at::DeviceType b) {
   };
 
   // Kick off work
-  std::vector<c10::intrusive_ptr<::c10d::ProcessGroup::Work>> work(size);
+  std::vector<c10::intrusive_ptr<::c10d::Work>> work(size);
   const char* GLOO_A2A_STR = "gloo:all_to_all";
   std::vector<std::vector<int64_t>> allShapes;
   for (const auto& vec : inputSplits) {
@@ -495,7 +503,7 @@ void testBarrier(const std::string& path) {
   // Kick off work
   enableProfilerLegacy(ProfilerConfig(
       ProfilerState::CPU, /* report_input_shapes */ true, false));
-  std::vector<c10::intrusive_ptr<::c10d::ProcessGroup::Work>> work(size);
+  std::vector<c10::intrusive_ptr<::c10d::Work>> work(size);
   for (const auto i : c10::irange(size)) {
     work[i] = tests[i].getProcessGroup().barrier();
   }
@@ -743,10 +751,25 @@ TEST(ProcessGroupGlooTest, testAllReduceCPU) {
   }
 }
 
+TEST(ProcessGroupGlooTest, testAllReduceBfloatCPU) {
+  {
+    TemporaryFile file;
+    testAllreduce(file.path, at::DeviceType::CPU, at::kBFloat16);
+    testAllreduceUsingWorkAPI(file.path, at::DeviceType::CPU);
+  }
+}
+
 TEST(ProcessGroupGlooTest, testBroadcastCPU) {
   {
     TemporaryFile file;
     testBroadcast(file.path, at::DeviceType::CPU);
+  }
+}
+
+TEST(ProcessGroupGlooTest, testBroadcastBfloatCPU) {
+  {
+    TemporaryFile file;
+    testBroadcast(file.path, at::DeviceType::CPU, at::kBFloat16);
   }
 }
 

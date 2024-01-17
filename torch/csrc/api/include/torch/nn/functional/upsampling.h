@@ -5,6 +5,7 @@
 #include <torch/nn/options/upsampling.h>
 
 #include <cmath>
+#include <utility>
 
 namespace torch {
 namespace nn {
@@ -85,8 +86,8 @@ inline Tensor interpolate(
     c10::optional<bool> align_corners,
     c10::optional<bool> recompute_scale_factor,
     bool antialias) {
-  if (c10::get_if<enumtype::kNearest>(&mode) ||
-      c10::get_if<enumtype::kArea>(&mode)) {
+  if (std::holds_alternative<enumtype::kNearest>(mode) ||
+      std::get_if<enumtype::kArea>(&mode)) {
     if (align_corners != c10::nullopt) {
       TORCH_CHECK(
           false,
@@ -106,6 +107,16 @@ inline Tensor interpolate(
     }
   }
 
+  TORCH_CHECK(
+      input.dim() >= 3 && input.dim() <= 5,
+      "Input Error: Only 3D, 4D and 5D input Tensors supported "
+      "(got ",
+      input.dim(),
+      "D) for the modes: nearest | linear | bilinear | bicubic | trilinear "
+      "(got ",
+      enumtype::get_enum_name(mode),
+      ")");
+
   auto scale_factor_len = input.dim() - 2;
   std::vector<c10::optional<double>> scale_factor_list(
       scale_factor_len, c10::nullopt);
@@ -118,106 +129,118 @@ inline Tensor interpolate(
   }
 
   if (antialias &&
-      !(input.dim() == 4 && (c10::get_if<enumtype::kBilinear>(&mode)))) {
-    TORCH_CHECK(false, "Anti-alias option is only supported for bilinear mode");
+      !(input.dim() == 4 &&
+        (std::get_if<enumtype::kBilinear>(&mode) ||
+         std::get_if<enumtype::kBicubic>(&mode)))) {
+    TORCH_CHECK(
+        false,
+        "Anti-alias option is only supported for bilinear and bicubic modes");
   }
 
   auto closed_over_args =
       std::make_tuple(input, size, scale_factor, recompute_scale_factor);
-  if (input.dim() == 3 && c10::get_if<enumtype::kNearest>(&mode)) {
+  if (input.dim() == 3 && std::get_if<enumtype::kNearest>(&mode)) {
     return torch::upsample_nearest1d(
         input,
-        _interp_output_size(1, closed_over_args),
+        _interp_output_size(1, std::move(closed_over_args)),
         scale_factor_list.at(0));
-  } else if (input.dim() == 4 && c10::get_if<enumtype::kNearest>(&mode)) {
+  } else if (input.dim() == 4 && std::get_if<enumtype::kNearest>(&mode)) {
     return torch::upsample_nearest2d(
         input,
-        _interp_output_size(2, closed_over_args),
+        _interp_output_size(2, std::move(closed_over_args)),
         scale_factor_list.at(0),
         scale_factor_list.at(1));
-  } else if (input.dim() == 5 && c10::get_if<enumtype::kNearest>(&mode)) {
+  } else if (input.dim() == 5 && std::get_if<enumtype::kNearest>(&mode)) {
     return torch::upsample_nearest3d(
         input,
-        _interp_output_size(3, closed_over_args),
+        _interp_output_size(3, std::move(closed_over_args)),
         scale_factor_list.at(0),
         scale_factor_list.at(1),
         scale_factor_list.at(2));
-  } else if (input.dim() == 3 && c10::get_if<enumtype::kNearestExact>(&mode)) {
+  } else if (input.dim() == 3 && std::get_if<enumtype::kNearestExact>(&mode)) {
     return torch::_upsample_nearest_exact1d(
         input,
-        _interp_output_size(1, closed_over_args),
+        _interp_output_size(1, std::move(closed_over_args)),
         scale_factor_list.at(0));
-  } else if (input.dim() == 4 && c10::get_if<enumtype::kNearestExact>(&mode)) {
+  } else if (input.dim() == 4 && std::get_if<enumtype::kNearestExact>(&mode)) {
     return torch::_upsample_nearest_exact2d(
         input,
-        _interp_output_size(2, closed_over_args),
+        _interp_output_size(2, std::move(closed_over_args)),
         scale_factor_list.at(0),
         scale_factor_list.at(1));
-  } else if (input.dim() == 5 && c10::get_if<enumtype::kNearestExact>(&mode)) {
+  } else if (input.dim() == 5 && std::get_if<enumtype::kNearestExact>(&mode)) {
     return torch::_upsample_nearest_exact3d(
         input,
-        _interp_output_size(3, closed_over_args),
+        _interp_output_size(3, std::move(closed_over_args)),
         scale_factor_list.at(0),
         scale_factor_list.at(1),
         scale_factor_list.at(2));
-  } else if (input.dim() == 3 && c10::get_if<enumtype::kArea>(&mode)) {
+  } else if (input.dim() == 3 && std::get_if<enumtype::kArea>(&mode)) {
     return detail::adaptive_avg_pool1d(
-        input, _interp_output_size(1, closed_over_args));
-  } else if (input.dim() == 4 && c10::get_if<enumtype::kArea>(&mode)) {
+        input, _interp_output_size(1, std::move(closed_over_args)));
+  } else if (input.dim() == 4 && std::get_if<enumtype::kArea>(&mode)) {
     return detail::adaptive_avg_pool2d(
-        input, _interp_output_size(2, closed_over_args));
-  } else if (input.dim() == 5 && c10::get_if<enumtype::kArea>(&mode)) {
+        input, _interp_output_size(2, std::move(closed_over_args)));
+  } else if (input.dim() == 5 && std::get_if<enumtype::kArea>(&mode)) {
     return detail::adaptive_avg_pool3d(
-        input, _interp_output_size(3, closed_over_args));
-  } else if (input.dim() == 3 && c10::get_if<enumtype::kLinear>(&mode)) {
+        input, _interp_output_size(3, std::move(closed_over_args)));
+  } else if (input.dim() == 3 && std::get_if<enumtype::kLinear>(&mode)) {
     TORCH_INTERNAL_ASSERT(align_corners != c10::nullopt);
     return torch::upsample_linear1d(
         input,
-        _interp_output_size(1, closed_over_args),
+        _interp_output_size(1, std::move(closed_over_args)),
         *align_corners,
         scale_factor_list.at(0));
-  } else if (input.dim() == 3 && c10::get_if<enumtype::kBilinear>(&mode)) {
+  } else if (input.dim() == 3 && std::get_if<enumtype::kBilinear>(&mode)) {
     TORCH_CHECK(false, "Got 3D input, but bilinear mode needs 4D input");
-  } else if (input.dim() == 3 && c10::get_if<enumtype::kTrilinear>(&mode)) {
+  } else if (input.dim() == 3 && std::get_if<enumtype::kTrilinear>(&mode)) {
     TORCH_CHECK(false, "Got 3D input, but trilinear mode needs 5D input");
-  } else if (input.dim() == 4 && c10::get_if<enumtype::kLinear>(&mode)) {
+  } else if (input.dim() == 4 && std::get_if<enumtype::kLinear>(&mode)) {
     TORCH_CHECK(false, "Got 4D input, but linear mode needs 3D input");
-  } else if (input.dim() == 4 && c10::get_if<enumtype::kBilinear>(&mode)) {
+  } else if (input.dim() == 4 && std::get_if<enumtype::kBilinear>(&mode)) {
     TORCH_INTERNAL_ASSERT(align_corners != c10::nullopt);
     if (antialias) {
       return torch::_upsample_bilinear2d_aa(
           input,
-          _interp_output_size(2, closed_over_args),
+          _interp_output_size(2, std::move(closed_over_args)),
           *align_corners,
           scale_factor_list.at(0),
           scale_factor_list.at(1));
     }
     return torch::upsample_bilinear2d(
         input,
-        _interp_output_size(2, closed_over_args),
+        _interp_output_size(2, std::move(closed_over_args)),
         *align_corners,
         scale_factor_list.at(0),
         scale_factor_list.at(1));
-  } else if (input.dim() == 4 && c10::get_if<enumtype::kTrilinear>(&mode)) {
+  } else if (input.dim() == 4 && std::get_if<enumtype::kTrilinear>(&mode)) {
     TORCH_CHECK(false, "Got 4D input, but trilinear mode needs 5D input");
-  } else if (input.dim() == 5 && c10::get_if<enumtype::kLinear>(&mode)) {
+  } else if (input.dim() == 5 && std::get_if<enumtype::kLinear>(&mode)) {
     TORCH_CHECK(false, "Got 5D input, but linear mode needs 3D input");
-  } else if (input.dim() == 5 && c10::get_if<enumtype::kBilinear>(&mode)) {
+  } else if (input.dim() == 5 && std::get_if<enumtype::kBilinear>(&mode)) {
     TORCH_CHECK(false, "Got 5D input, but bilinear mode needs 4D input");
-  } else if (input.dim() == 5 && c10::get_if<enumtype::kTrilinear>(&mode)) {
+  } else if (input.dim() == 5 && std::get_if<enumtype::kTrilinear>(&mode)) {
     TORCH_INTERNAL_ASSERT(align_corners != c10::nullopt);
     return torch::upsample_trilinear3d(
         input,
-        _interp_output_size(3, closed_over_args),
+        _interp_output_size(3, std::move(closed_over_args)),
         *align_corners,
         scale_factor_list.at(0),
         scale_factor_list.at(1),
         scale_factor_list.at(2));
-  } else if (input.dim() == 4 && c10::get_if<enumtype::kBicubic>(&mode)) {
+  } else if (input.dim() == 4 && std::get_if<enumtype::kBicubic>(&mode)) {
     TORCH_INTERNAL_ASSERT(align_corners != c10::nullopt);
+    if (antialias) {
+      return torch::_upsample_bicubic2d_aa(
+          input,
+          _interp_output_size(2, std::move(closed_over_args)),
+          *align_corners,
+          scale_factor_list.at(0),
+          scale_factor_list.at(1));
+    }
     return torch::upsample_bicubic2d(
         input,
-        _interp_output_size(2, closed_over_args),
+        _interp_output_size(2, std::move(closed_over_args)),
         *align_corners,
         scale_factor_list.at(0),
         scale_factor_list.at(1));

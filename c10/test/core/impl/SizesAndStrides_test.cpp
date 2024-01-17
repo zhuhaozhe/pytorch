@@ -10,6 +10,7 @@
 using namespace c10;
 using namespace c10::impl;
 
+// NOLINTBEGIN(*conversion*, *multiplication*)
 static void checkData(
     const SizesAndStrides& sz,
     IntArrayRef sizes,
@@ -26,7 +27,7 @@ static void checkData(
     EXPECT_EQ(*(sz.sizes_begin() + idx), x) << "index: " << idx;
     idx++;
   }
-  EXPECT_EQ(asIntArrayRefSlow(sz.sizes_arrayref()), sizes);
+  EXPECT_EQ(sz.sizes_arrayref(), sizes);
 
   idx = 0;
   for (auto x : strides) {
@@ -37,7 +38,7 @@ static void checkData(
 
     idx++;
   }
-  EXPECT_EQ(asIntArrayRefSlow(sz.strides_arrayref()), strides);
+  EXPECT_EQ(sz.strides_arrayref(), strides);
 }
 
 TEST(SizesAndStridesTest, DefaultConstructor) {
@@ -418,3 +419,4 @@ TEST(SizesAndStridesTest, MoveAssignmentSelf) {
   selfMove(big, big);
   checkBig(big);
 }
+// NOLINTEND(*conversion*, *multiplication*)

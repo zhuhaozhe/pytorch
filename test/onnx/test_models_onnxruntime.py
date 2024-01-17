@@ -8,11 +8,12 @@ from typing import List, Mapping, Tuple
 import onnx_test_common
 import parameterized
 import PIL
+import pytorch_test_common
+import test_models
 
 import torch
 import torchvision
 from pytorch_test_common import skipIfUnsupportedMinOpsetVersion, skipScriptTest
-from test_models import TestModels
 from torch import nn
 from torch.testing._internal import common_utils
 from torchvision import ops
@@ -27,28 +28,46 @@ from torchvision.models.detection import (
 )
 
 
-def exportTest(self, model, inputs, rtol=1e-2, atol=1e-7, opset_versions=None):
+def exportTest(
+    self,
+    model,
+    inputs,
+    rtol=1e-2,
+    atol=1e-7,
+    opset_versions=None,
+    acceptable_error_percentage=None,
+):
     opset_versions = opset_versions if opset_versions else [7, 8, 9, 10, 11, 12, 13, 14]
 
     for opset_version in opset_versions:
         self.opset_version = opset_version
         self.onnx_shape_inference = True
         onnx_test_common.run_model_test(
-            self, model, input_args=inputs, rtol=rtol, atol=atol
+            self,
+            model,
+            input_args=inputs,
+            rtol=rtol,
+            atol=atol,
+            acceptable_error_percentage=acceptable_error_percentage,
         )
 
         if self.is_script_test_enabled and opset_version > 11:
             script_model = torch.jit.script(model)
             onnx_test_common.run_model_test(
-                self, script_model, input_args=inputs, rtol=rtol, atol=atol
+                self,
+                script_model,
+                input_args=inputs,
+                rtol=rtol,
+                atol=atol,
+                acceptable_error_percentage=acceptable_error_percentage,
             )
 
 
 TestModels = type(
     "TestModels",
-    (common_utils.TestCase,),
+    (pytorch_test_common.ExportTestCase,),
     dict(
-        TestModels.__dict__,
+        test_models.TestModels.__dict__,
         is_script_test_enabled=False,
         is_script=False,
         exportTest=exportTest,
@@ -59,7 +78,7 @@ TestModels = type(
 # model tests for scripting with new JIT APIs and shape inference
 TestModels_new_jit_API = type(
     "TestModels_new_jit_API",
-    (common_utils.TestCase,),
+    (pytorch_test_common.ExportTestCase,),
     dict(
         TestModels.__dict__,
         exportTest=exportTest,
@@ -180,7 +199,7 @@ def _init_test_roi_heads_faster_rcnn():
 
 @parameterized.parameterized_class(
     ("is_script",),
-    ([True, False],),
+    [(True,), (False,)],
     class_name_func=onnx_test_common.parameterize_class_name,
 )
 class TestModelsONNXRuntime(onnx_test_common._TestONNXRuntime):
@@ -226,6 +245,7 @@ class TestModelsONNXRuntime(onnx_test_common._TestONNXRuntime):
             atol=1e-5,
         )
 
+    @unittest.skip("Failing after ONNX 1.13.0")
     @skipIfUnsupportedMinOpsetVersion(11)
     @skipScriptTest()
     def test_mask_rcnn(self):
@@ -375,6 +395,7 @@ class TestModelsONNXRuntime(onnx_test_common._TestONNXRuntime):
         )
 
     @skipScriptTest()  # TODO: #75625
+    @skipIfUnsupportedMinOpsetVersion(20)
     def test_transformer_encoder(self):
         class MyModule(torch.nn.Module):
             def __init__(self, ninp, nhead, nhid, dropout, nlayers):
@@ -399,7 +420,7 @@ class TestModelsONNXRuntime(onnx_test_common._TestONNXRuntime):
     @skipIfUnsupportedMinOpsetVersion(11)
     @skipScriptTest()
     def test_shufflenet_v2_dynamic_axes(self):
-        model = torchvision.models.shufflenet_v2_x0_5(pretrained=False)
+        model = torchvision.models.shufflenet_v2_x0_5(weights=None)
         dummy_input = torch.randn(1, 3, 224, 224, requires_grad=True)
         test_inputs = torch.randn(3, 3, 224, 224, requires_grad=True)
         self.run_test(

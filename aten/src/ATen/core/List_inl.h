@@ -118,9 +118,13 @@ namespace detail {
 
 namespace impl {
 
-template<class T, class Iterator>
-ListElementReference<T, Iterator>::operator T() const {
-  return c10::detail::list_element_to<T>(*iterator_);
+template <class T, class Iterator>
+ListElementReference<T, Iterator>::operator std::conditional_t<
+    std::is_reference<typename c10::detail::ivalue_to_const_ref_overload_return<
+        T>::type>::value,
+    const T&,
+    T>() const {
+  return iterator_->template to<T>();
 }
 
 template<class T, class Iterator>
@@ -131,12 +135,12 @@ ListElementReference<T, Iterator>& ListElementReference<T, Iterator>::operator=(
 
 template<class T, class Iterator>
 ListElementReference<T, Iterator>& ListElementReference<T, Iterator>::operator=(const T& new_value) && {
-  *iterator_ = c10::detail::ListElementFrom<T>::from(std::move(new_value));
+  *iterator_ = c10::detail::ListElementFrom<T>::from(new_value);
   return *this;
 }
 
 template<class T, class Iterator>
-ListElementReference<T, Iterator>& ListElementReference<T, Iterator>::operator=(ListElementReference<T, Iterator>&& rhs) && {
+ListElementReference<T, Iterator>& ListElementReference<T, Iterator>::operator=(ListElementReference<T, Iterator>&& rhs) && noexcept {
   *iterator_ = *rhs.iterator_;
   return *this;
 }
@@ -148,7 +152,7 @@ void swap(ListElementReference<T, Iterator>&& lhs, ListElementReference<T, Itera
 
 template<class T, class Iterator>
 bool operator==(const ListElementReference<T, Iterator>& lhs, const T& rhs) {
-  T lhs_tmp = lhs;
+  const T& lhs_tmp = lhs;
   return lhs_tmp == rhs;
 }
 
@@ -194,7 +198,7 @@ typename List<T>::internal_const_reference_type List<T>::operator[](size_type po
 template<class T>
 typename List<T>::internal_reference_type List<T>::operator[](size_type pos) {
   static_cast<void>(impl_->list.at(pos)); // Throw the exception if it is out of range.
-  return {impl_->list.begin() + pos};
+  return {impl_->list.begin() + static_cast<typename decltype(impl_->list)::difference_type>(pos)};
 }
 
 template<class T>
@@ -344,5 +348,13 @@ TypePtr List<T>::elementType() const {
 template <class T>
 void List<T>::unsafeSetElementType(TypePtr t) {
   impl_->elementType = std::move(t);
+}
+
+namespace impl {
+
+inline const IValue* ptr_to_first_element(const GenericList& list) {
+  return &list.impl_->list[0];
+}
+
 }
 }

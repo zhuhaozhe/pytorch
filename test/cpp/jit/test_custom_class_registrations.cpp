@@ -53,6 +53,9 @@ struct Foo : torch::CustomClassHolder {
   int64_t combine(c10::intrusive_ptr<Foo> b) {
     return this->info() + b->info();
   }
+  bool eq(c10::intrusive_ptr<Foo> other) {
+    return this->x == other->x && this->y == other->y;
+  }
 };
 
 struct _StaticMethod : torch::CustomClassHolder {
@@ -222,7 +225,7 @@ struct ElementwiseInterpreter : torch::CustomClassHolder {
     }
 
     if (!output_name_) {
-      throw std::runtime_error("Output name not specififed!");
+      throw std::runtime_error("Output name not specified!");
     }
 
     return environment.at(*output_name_);
@@ -275,6 +278,16 @@ struct ReLUClass : public torch::CustomClassHolder {
 };
 
 TORCH_LIBRARY(_TorchScriptTesting, m) {
+  m.class_<ScalarTypeClass>("_ScalarTypeClass")
+      .def(torch::init<at::ScalarType>())
+      .def_pickle(
+          [](const c10::intrusive_ptr<ScalarTypeClass>& self) {
+            return std::make_tuple(self->scalar_type_);
+          },
+          [](std::tuple<at::ScalarType> s) {
+            return c10::make_intrusive<ScalarTypeClass>(std::get<0>(s));
+          });
+
   m.class_<ReLUClass>("_ReLUClass")
       .def(torch::init<>())
       .def("run", &ReLUClass::run);
@@ -304,6 +317,7 @@ TORCH_LIBRARY(_TorchScriptTesting, m) {
       .def("info", &Foo::info)
       .def("increment", &Foo::increment)
       .def("add", &Foo::add)
+      .def("__eq__", &Foo::eq)
       .def("combine", &Foo::combine);
 
   m.class_<FooGetterSetter>("_FooGetterSetter")

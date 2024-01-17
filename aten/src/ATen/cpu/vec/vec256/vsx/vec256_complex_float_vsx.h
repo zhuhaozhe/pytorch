@@ -146,8 +146,8 @@ class Vectorized<ComplexFlt> {
     auto mask_complex = Vectorized<ComplexFlt>(
         vec_mergeh(mask._vec0, mask._vec0), vec_mergeh(mask._vec1, mask._vec1));
     return {
-        vec_sel(a._vec0, b._vec0, mask_complex._vec0),
-        vec_sel(a._vec1, b._vec1, mask_complex._vec1),
+        vec_sel(a._vec0, b._vec0, reinterpret_cast<vbool32>(mask_complex._vec0)),
+        vec_sel(a._vec1, b._vec1, reinterpret_cast<vbool32>(mask_complex._vec1)),
     };
   }
 
@@ -156,8 +156,8 @@ class Vectorized<ComplexFlt> {
       const Vectorized<ComplexFlt>& b,
       const Vectorized<ComplexFlt>& mask) {
     return {
-        vec_sel(a._vec0, b._vec0, mask._vec0),
-        vec_sel(a._vec1, b._vec1, mask._vec1),
+        vec_sel(a._vec0, b._vec0, reinterpret_cast<vbool32>(mask._vec0)),
+        vec_sel(a._vec1, b._vec1, reinterpret_cast<vbool32>(mask._vec1)),
     };
   }
 
@@ -196,7 +196,7 @@ class Vectorized<ComplexFlt> {
           vec_vsx_ld(offset16, reinterpret_cast<const float*>(ptr))};
     }
 
-    __at_align__ value_type tmp_values[size()];
+    __at_align__ value_type tmp_values[size()] = {};
     std::memcpy(tmp_values, ptr, std::min(count, size()) * sizeof(value_type));
 
     return {
@@ -245,7 +245,7 @@ class Vectorized<ComplexFlt> {
     // lets permute second so that we can add it getting horizontal sums
     auto first_perm = first.el_swapped(); // 2perm
     auto second_perm = second.el_swapped(); // 2perm
-    // summ
+    // sum
     auto first_ret = first + first_perm; // 2add
     auto second_ret = second + second_perm; // 2 add
     // now lets choose evens
@@ -259,7 +259,7 @@ class Vectorized<ComplexFlt> {
     // lets permute second so that we can add it getting horizontal sums
     auto first_perm = first.el_swapped(); // 2perm
     auto second_perm = second.el_swapped(); // 2perm
-    // summ
+    // sum
     auto first_ret = first - first_perm; // 2sub
     auto second_ret = second - second_perm; // 2 sub
     // now lets choose evens
@@ -274,8 +274,9 @@ class Vectorized<ComplexFlt> {
   }
 
   Vectorized<ComplexFlt> abs_() const {
-    auto ret = abs_2_();
-    return ret.elwise_sqrt();
+    auto vi = el_mergeo();
+    auto vr = el_mergee();
+    return {Sleef_hypotf4_u05vsx(vr._vec0, vi._vec0), Sleef_hypotf4_u05vsx(vr._vec1, vi._vec1)};
   }
 
   Vectorized<ComplexFlt> abs() const {
@@ -319,6 +320,10 @@ class Vectorized<ComplexFlt> {
   Vectorized<ComplexFlt> log10() const {
     auto ret = log();
     return ret.elwise_mult(log10e_inv);
+  }
+
+  Vectorized<ComplexFlt> log1p() const {
+    return map(std::log1p);
   }
 
   Vectorized<ComplexFlt> el_swapped() const {
@@ -445,6 +450,9 @@ class Vectorized<ComplexFlt> {
     auto ln = (sum / sub).log(); // ln((i + z)/(i - z))
     return ln * imag_half; // i/2*ln()
   }
+  Vectorized<ComplexFlt> atanh() const {
+    return map(std::atanh);
+  }
 
   Vectorized<ComplexFlt> acos() const {
     // acos(x) = pi/2 - asin(x)
@@ -528,52 +536,26 @@ class Vectorized<ComplexFlt> {
   Vectorized<ComplexFlt> exp() const {
     return map(std::exp);
   }
+  Vectorized<ComplexFlt> exp2() const {
+    return map(exp2_impl);
+  }
+  Vectorized<ComplexFlt> expm1() const {
+    return map(std::expm1);
+  }
 
   Vectorized<ComplexFlt> eq(const Vectorized<ComplexFlt>& other) const {
-    auto ret = (*this == other);
-    return ret & one;
+    auto eq = (*this == other);  // compares real and imag individually
+    // If both real numbers and imag numbers are equal, then the complex numbers are equal
+    return (eq.real() & eq.imag()) & one;
   }
   Vectorized<ComplexFlt> ne(const Vectorized<ComplexFlt>& other) const {
-    auto ret = (*this != other);
-    return ret & one;
+    auto ne = (*this != other);  // compares real and imag individually
+    // If either real numbers or imag numbers are not equal, then the complex numbers are not equal
+    return (ne.real() | ne.imag()) & one;
   }
 
   Vectorized<ComplexFlt> sgn() const {
     return map(at::native::sgn_impl);
-  }
-
-  Vectorized<ComplexFlt> hypot(const Vectorized<ComplexFlt>& b) const {
-      TORCH_CHECK(false, "not supported for complex numbers");
-  }
-
-  Vectorized<ComplexFlt> nextafter(const Vectorized<ComplexFlt>& b) const {
-      TORCH_CHECK(false, "not supported for complex numbers");
-  }
-
-  Vectorized<ComplexFlt> igamma(const Vectorized<ComplexFlt>& x) const {
-    TORCH_CHECK(false, "not supported for complex numbers");
-  }
-
-  Vectorized<ComplexFlt> igammac(const Vectorized<ComplexFlt>& x) const {
-    TORCH_CHECK(false, "not supported for complex numbers");
-  }
-
-  Vectorized<ComplexFlt> atan2(const Vectorized<ComplexFlt>& b) const {
-    TORCH_CHECK(false,"not supported for complex numbers");
-  }
-  Vectorized<ComplexFlt> erf() const {
-    TORCH_CHECK(false,"not supported for complex numbers");
-  }
-  Vectorized<ComplexFlt> erfc() const {
-    TORCH_CHECK(false,"not supported for complex numbers");
-  }
-
-  Vectorized<ComplexFlt> log1p() const {
-    TORCH_CHECK(false,"not supported for complex numbers");
-  }
-
-  Vectorized<ComplexFlt> expm1() const {
-    TORCH_CHECK(false,"not supported for complex numbers");
   }
 
   Vectorized<ComplexFlt> operator<(const Vectorized<ComplexFlt>& other) const {
@@ -592,22 +574,6 @@ class Vectorized<ComplexFlt> {
     TORCH_CHECK(false, "not supported for complex numbers");
   }
 
-  Vectorized<ComplexFlt> lt(const Vectorized<ComplexFlt>& other) const {
-    TORCH_CHECK(false, "not supported for complex numbers");
-  }
-
-  Vectorized<ComplexFlt> le(const Vectorized<ComplexFlt>& other) const {
-    TORCH_CHECK(false, "not supported for complex numbers");
-  }
-
-  Vectorized<ComplexFlt> gt(const Vectorized<ComplexFlt>& other) const {
-    TORCH_CHECK(false, "not supported for complex numbers");
-  }
-
-  Vectorized<ComplexFlt> ge(const Vectorized<ComplexFlt>& other) const {
-    TORCH_CHECK(false, "not supported for complex numbers");
-  }
-
   DEFINE_MEMBER_OP(operator==, ComplexFlt, vec_cmpeq)
   DEFINE_MEMBER_OP(operator!=, ComplexFlt, vec_cmpne)
 
@@ -616,7 +582,7 @@ class Vectorized<ComplexFlt> {
   DEFINE_MEMBER_OP(operator&, ComplexFlt, vec_and)
   DEFINE_MEMBER_OP(operator|, ComplexFlt, vec_or)
   DEFINE_MEMBER_OP(operator^, ComplexFlt, vec_xor)
-  // elelemtwise helpers
+  // elementwise helpers
   DEFINE_MEMBER_OP(elwise_mult, ComplexFlt, vec_mul)
   DEFINE_MEMBER_OP(elwise_div, ComplexFlt, vec_div)
   DEFINE_MEMBER_OP(elwise_gt, ComplexFlt, vec_cmpgt)

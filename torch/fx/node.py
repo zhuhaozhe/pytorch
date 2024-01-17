@@ -5,16 +5,18 @@ from .immutable_collections import immutable_dict, immutable_list
 import torch
 import builtins
 import types
+import inspect
 import warnings
 from torch.fx.operator_schemas import normalize_function, normalize_module, ArgsKwargsPair
+from .._ops import ops as _ops
 
 if TYPE_CHECKING:
     from .graph import Graph
 
-__all__ = ['Node', 'map_arg', 'map_aggregate']
+__all__ = ['Node', 'map_arg', 'map_aggregate', "has_side_effect"]
 
 BaseArgumentTypes = Union[str, int, float, bool, complex, torch.dtype,
-                          torch.Tensor, torch.device, torch.memory_format, torch.layout]
+                          torch.Tensor, torch.device, torch.memory_format, torch.layout, torch._ops.OpOverload]
 base_types = BaseArgumentTypes.__args__  # type: ignore[attr-defined]
 
 Target = Union[Callable[..., Any], str]
@@ -24,15 +26,37 @@ Argument = Optional[Union[
     List[Any],  # actually Argument
     Dict[str, Any],  # actually Argument
     slice,  # Slice[Argument, Argument, Argument], but slice is not a templated type in typing
+    range,
     'Node',
     BaseArgumentTypes
 ]]
 
+_side_effectful_need_to_be_preserved_pre_dispatch: Set[Callable] = {
+    torch._C._set_grad_enabled,
+    torch.amp._enter_autocast,
+    torch.amp._exit_autocast,
+}
+
 _side_effectful_functions: Set[Callable] = {
     torch._assert,
-    torch.ops.profiler._record_function_enter,
-    torch.ops.profiler._record_function_enter_new,
-    torch.ops.profiler._record_function_exit}
+    torch._assert_async,
+    _ops.aten._assert_async.msg,
+    _ops.aten._assert_scalar.default,
+    _ops.aten.copy_.default,
+    _ops.aten.sym_constrain_range.default,
+    _ops.aten.sym_constrain_range_for_size.default,
+    _ops.profiler._record_function_enter,
+    _ops.profiler._record_function_enter_new,
+    _ops.profiler._record_function_exit,
+    _ops.inductor.accumulate_grad_.default,
+} | _side_effectful_need_to_be_preserved_pre_dispatch
+
+
+@compatibility(is_backward_compatible=False)
+def has_side_effect(fn: Callable) -> None:
+    _side_effectful_functions.add(fn)
+    return fn
+
 
 # this is fixed on master, WAR for 1.5
 def _find_module_of_method(orig_method: Callable[..., Any]) -> str:
@@ -59,7 +83,7 @@ def _type_repr(obj):
             return obj.__qualname__
         return f'{obj.__module__}.{obj.__qualname__}'
     if obj is ...:
-        return('...')
+        return '...'
     if isinstance(obj, types.FunctionType):
         return obj.__name__
     return repr(obj)
@@ -68,9 +92,22 @@ def _get_qualified_name(func: Callable[..., Any]) -> str:
     # things like getattr just appear in builtins
     if getattr(builtins, func.__name__, None) is func:
         return func.__name__
+    # torch.Tensor.{fn}
+    if (isinstance(func, (types.MethodDescriptorType, types.WrapperDescriptorType))
+       and func is getattr(torch.Tensor, func.__name__, None)):
+        return f"torch.Tensor.{func.__name__}"
     name = func.__name__
+    if name == "<lambda>":
+        # For lambdas, try to get their defining name in the module
+        try:
+            name = inspect.getsource(func).split("=")[0].strip()
+        except Exception as e:
+            raise RuntimeError("Unable to represent lambda") from e
     module = _find_module_of_method(func)
     module = module.replace('torch._ops', 'torch.ops')  # WAR for bug in how torch.ops assigns module
+    # Fixup segment_reduce mismatch
+    if module == "torch" and name == "segment_reduce":
+        name = "_" + name
     return f'{module}.{name}'
 
 def _format_arg(arg, max_list_len=float('inf')) -> str:
@@ -115,7 +152,7 @@ class Node:
       following the Python calling convention
     - ``call_module`` applies a module in the module hierarchy's ``forward()`` method to given arguments. ``name`` is
       as previous. ``target`` is the fully-qualified name of the module in the module hierarchy to call.
-      ``args`` and ``kwargs`` represent the arguments to invoke the module on, *including the self argument*.
+      ``args`` and ``kwargs`` represent the arguments to invoke the module on, *excluding the self argument*.
     - ``call_method`` calls a method on a value. ``name`` is as similar. ``target`` is the string name of the method
       to apply to the ``self`` argument. ``args`` and ``kwargs`` represent the arguments to invoke the module on,
       *including the self argument*
@@ -179,7 +216,7 @@ class Node:
         # would appear once here, but represents two uses.
         #
         # Is a dict to act as an "ordered set". Keys are significant, value dont-care
-        self.users : Dict['Node', None] = {}
+        self.users : Dict[Node, None] = {}
         # Type expression representing the output value of this node.
         # This should contain the same class of Type objects that would appear
         # as type annotations for function inputs/outputs.
@@ -337,6 +374,30 @@ class Node:
         self.args = tuple(args)
 
     @compatibility(is_backward_compatible=True)
+    def insert_arg(self, idx : int, arg : Argument) -> None:
+        """
+        Insert an positional argument to the argument list with given index.
+
+        Args:
+
+            idx (int): The index of the element in ``self.args`` to be inserted before.
+            arg (Argument): The new argument value to insert into ``args``
+        """
+        assert 0 <= idx <= len(self.args), "insert_args index must be between 0 and len(self.args)"
+        args_left = self.args[:idx]
+        args_right = self.args[idx:]
+
+        self._args = args_left + (arg,) + args_right
+
+        _new_input_nodes = {}
+        map_arg(arg, _new_input_nodes.setdefault)
+
+        for new_use in _new_input_nodes.keys():
+            if new_use not in self._input_nodes:
+                self._input_nodes.setdefault(new_use)
+                new_use.users.setdefault(self)
+
+    @compatibility(is_backward_compatible=True)
     def update_kwarg(self, key : str, arg : Argument) -> None:
         """
         Update an existing keyword argument to contain the new value
@@ -355,9 +416,13 @@ class Node:
     def stack_trace(self) -> Optional[str]:
         """
         Return the Python stack trace that was recorded during tracing, if any.
-        This property is usually populated by `Tracer.create_proxy`. To record
-        stack traces during tracing for debug purposes, set
-        `record_stack_traces = True` on the `Tracer` instance.
+        When traced with fx.Tracer, this property is usually populated by
+        `Tracer.create_proxy`. To record stack traces during tracing for debug purposes,
+        set `record_stack_traces = True` on the `Tracer` instance.
+        When traced with dynamo, this property will be populated by default by
+        `OutputGraph.create_proxy`.
+
+        stack_trace would have the innermost frame at the end of the string.
         """
         return self.meta.get("stack_trace", None)
 
@@ -376,8 +441,8 @@ class Node:
             old_use.users.pop(self)
 
         self._input_nodes = {}
-        map_arg(self._args, lambda n: self._input_nodes.setdefault(n))
-        map_arg(self._kwargs, lambda n: self._input_nodes.setdefault(n))
+        map_arg(self._args, self._input_nodes.setdefault)
+        map_arg(self._kwargs, self._input_nodes.setdefault)
 
         for new_use in self._input_nodes.keys():
             new_use.users.setdefault(self)
@@ -392,7 +457,7 @@ class Node:
         Make target printouts more user-friendly.
         1) builtins will be printed as `builtins.xyz`
         2) operators will be printed as `operator.xyz`
-        3) other callables will be printed with qualfied name, e.g. torch.add
+        3) other callables will be printed with qualified name, e.g. torch.add
         """
         if isinstance(target, str):
             return target
@@ -450,10 +515,10 @@ class Node:
                 return None
             maybe_typename = f'{_type_repr(self.type)} ' if self.type else ''
             default_val = '(default=' + str(self.args[0]) + ')' if self.args else ''
-            return f'%{self.name} : {maybe_typename}[#users={len(self.users)}] = {self.op}[target={self.target}]{default_val}'
+            return f'%{self.name} : {maybe_typename}[num_users={len(self.users)}] = {self.op}[target={self.target}]{default_val}'
         elif self.op == 'get_attr':
             maybe_typename = f'{_type_repr(self.type)} ' if self.type is not None else ''
-            return f'%{self.name} : {maybe_typename}[#users={len(self.users)}] = ' \
+            return f'%{self.name} : {maybe_typename}[num_users={len(self.users)}] = ' \
                    f'{self.op}[target={self._pretty_print_target(self.target)}]'
         elif self.op == 'output':
             if self.type and maybe_return_typename:
@@ -461,14 +526,16 @@ class Node:
             return f'return {self.args[0]}'
         else:
             maybe_typename = f'{_type_repr(self.type)} ' if self.type is not None else ''
-            return f'%{self.name} : {maybe_typename}[#users={len(self.users)}] = ' \
+            return f'%{self.name} : {maybe_typename}[num_users={len(self.users)}] = ' \
                    f'{self.op}[target={self._pretty_print_target(self.target)}](' \
                    f'args = {_format_arg(self.args)}, kwargs = {_format_arg(self.kwargs)})'
 
     @compatibility(is_backward_compatible=True)
     def replace_all_uses_with(self,
                               replace_with : 'Node',
-                              delete_user_cb: Callable[['Node'], bool] = lambda user: True
+                              delete_user_cb: Callable[['Node'], bool] = lambda user: True,
+                              *,
+                              propagate_meta=False
                               ) -> List['Node']:
         """
         Replace all uses of ``self`` in the Graph with the Node ``replace_with``.
@@ -478,11 +545,21 @@ class Node:
             replace_with (Node): The node to replace all uses of ``self`` with.
             delete_user_cb (Callable): Callback that is called to determine
               whether a given user of the self node should be removed.
+            propagate_meta (bool): Whether or not to copy all properties
+              on the .meta field of the original node onto the replacement node.
+              For safety, this is only valid to do if the replacement node
+              doesn't already have an existing .meta field.
 
         Returns:
 
             The list of Nodes on which this change was made.
         """
+        if propagate_meta:
+            assert len(replace_with.meta) == 0, \
+                'Called node.replace_all_uses_with(replace_with, propagate_meta=True), ' \
+                'but replace_with already has .meta keys'
+            for k, v in self.meta.items():
+                replace_with.meta[k] = v
         to_process = list(self.users)
         skipped = []
         for use_node in to_process:
@@ -591,6 +668,13 @@ class Node:
         assert isinstance(new_kwargs, dict)
         self.__update_args_kwargs(new_args, new_kwargs)
 
+    def _rename(self, candidate: str):
+        if candidate == self.name:
+            return
+        name = self.graph._graph_namespace.create_name(candidate, None)
+        self.name = name
+        self.graph._graph_namespace._rename_object(self, name)
+
 
 @compatibility(is_backward_compatible=True)
 def map_arg(a: Argument, fn: Callable[[Node], Argument]) -> Argument:
@@ -600,27 +684,20 @@ def map_arg(a: Argument, fn: Callable[[Node], Argument]) -> Argument:
     assert callable(fn), "torch.fx.map_arg(a, fn): fn must be a callable"
     return map_aggregate(a, lambda x: fn(x) if isinstance(x, Node) else x)
 
-
 @compatibility(is_backward_compatible=True)
-def map_aggregate(a: Argument, fn: Callable[[Argument], Argument],
-                  should_traverse_fn: Optional[Callable[[Argument], bool]] = None) -> Argument:
+def map_aggregate(a: Argument, fn: Callable[[Argument], Argument]) -> Argument:
     """
     Apply fn to each Node appearing arg. arg may be a list, tuple, slice, or dict with string keys.
-    Traverses list, tuple, slice, or dict if ``should_traverse_fn`` is either None or returns True for supplied argument
     """
-    if should_traverse_fn and not should_traverse_fn(a):
-        return fn(a)
-
     if isinstance(a, tuple):
-        t = tuple(map_aggregate(elem, fn, should_traverse_fn) for elem in a)
+        t = tuple(map_aggregate(elem, fn) for elem in a)
         # Support NamedTuple (if it has `_fields`) by repacking into original type.
         return t if not hasattr(a, '_fields') else type(a)(*t)
     elif isinstance(a, list):
-        return immutable_list(map_aggregate(elem, fn, should_traverse_fn) for elem in a)
+        return immutable_list(map_aggregate(elem, fn) for elem in a)
     elif isinstance(a, dict):
-        return immutable_dict((k, map_aggregate(v, fn, should_traverse_fn)) for k, v in a.items())
+        return immutable_dict((k, map_aggregate(v, fn)) for k, v in a.items())
     elif isinstance(a, slice):
-        return slice(map_aggregate(a.start, fn, should_traverse_fn), map_aggregate(a.stop, fn, should_traverse_fn),
-                     map_aggregate(a.step, fn, should_traverse_fn))
+        return slice(map_aggregate(a.start, fn), map_aggregate(a.stop, fn), map_aggregate(a.step, fn))
     else:
         return fn(a)

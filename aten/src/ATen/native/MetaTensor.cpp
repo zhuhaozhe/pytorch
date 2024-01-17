@@ -9,22 +9,9 @@
 #include <ATen/ops/empty_strided_native.h>
 #endif
 
-namespace at {
-namespace native {
+namespace at::native {
 
-Tensor empty_meta(
-  IntArrayRef size,
-  c10::optional<ScalarType> dtype_opt,
-  c10::optional<Layout> layout_opt,
-  c10::optional<Device> device_opt,
-  c10::optional<bool> pin_memory_opt,
-  c10::optional<c10::MemoryFormat> memory_format_opt
-) {
-  return at::detail::empty_meta(
-      size, dtype_opt, layout_opt, device_opt, pin_memory_opt, memory_format_opt);
-}
-
-Tensor empty_symint_meta(
+Tensor empty_meta_symint(
   SymIntArrayRef size,
   c10::optional<ScalarType> dtype_opt,
   c10::optional<Layout> layout_opt,
@@ -41,7 +28,8 @@ Tensor empty_symint_meta(
       size, dtype_opt, layout_opt, device_opt, pin_memory_opt, memory_format_opt);
 }
 
-Tensor empty_strided_meta(
+// Kept only for BC with XLA
+static Tensor empty_strided_meta(
   IntArrayRef size,
   IntArrayRef stride,
   c10::optional<ScalarType> dtype_opt,
@@ -49,9 +37,19 @@ Tensor empty_strided_meta(
   c10::optional<Device> device_opt,
   c10::optional<bool> pin_memory_opt
 ) {
-  return at::detail::empty_strided_meta(
+  return empty_strided_meta_symint(c10::fromIntArrayRefSlow(size), c10::fromIntArrayRefSlow(stride), dtype_opt, layout_opt, device_opt, pin_memory_opt);
+}
+
+Tensor empty_strided_meta_symint(
+  SymIntArrayRef size,
+  SymIntArrayRef stride,
+  c10::optional<ScalarType> dtype_opt,
+  c10::optional<Layout> layout_opt,
+  c10::optional<Device> device_opt,
+  c10::optional<bool> pin_memory_opt
+) {
+  return at::detail::empty_strided_symint_meta(
       size, stride, dtype_opt, layout_opt, device_opt, pin_memory_opt);
 }
 
-} // namespace native
-} // namespace at
+} // namespace at::native

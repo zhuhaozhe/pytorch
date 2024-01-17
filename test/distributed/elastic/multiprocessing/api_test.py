@@ -41,7 +41,7 @@ from torch.testing._internal.common_utils import (
     TEST_WITH_TSAN,
     TestCase,
     run_tests,
-    sandcastle_skip_if,
+    skip_but_pass_in_sandcastle_if,
 )
 
 
@@ -244,7 +244,7 @@ if not (TEST_WITH_DEV_DBG_ASAN or IS_WINDOWS or IS_MACOS):
 
         def assert_in_file(self, expected: List[str], filename: str) -> None:
             expected = [f"{line.rstrip()}\n" for line in expected]
-            with open(filename, "r") as fp:
+            with open(filename) as fp:
                 actual = fp.readlines()
                 for line in expected:
                     self.assertIn(line, actual)
@@ -392,7 +392,7 @@ if not (TEST_WITH_DEV_DBG_ASAN or IS_WINDOWS or IS_MACOS):
                     results = pc.wait(period=0.1)
                     self.assertEqual({0: None, 1: None}, results.return_values)
 
-        @sandcastle_skip_if(TEST_WITH_DEV_DBG_ASAN, "tests incompatible with asan")
+        @skip_but_pass_in_sandcastle_if(TEST_WITH_DEV_DBG_ASAN, "tests incompatible with asan")
         def test_function_large_ret_val(self):
             # python multiprocessing.queue module uses pipes and actually PipedQueues
             # This means that if a single object is greater than a pipe size
@@ -522,7 +522,7 @@ if not (TEST_WITH_DEV_DBG_ASAN or IS_WINDOWS or IS_MACOS):
             with self.assertRaises(RuntimeError):
                 _validate_full_rank({}, 10, "")
 
-        @sandcastle_skip_if(
+        @skip_but_pass_in_sandcastle_if(
             NO_MULTIPROCESSING_SPAWN,
             "Disabled for environments that \
                         don't support multiprocessing with spawn start method",
@@ -609,6 +609,7 @@ if not (TEST_WITH_DEV_DBG_ASAN or IS_WINDOWS or IS_MACOS):
                         args={0: ("hello",), 1: ("hello",)},
                         envs={0: {"RANK": "0"}, 1: {"RANK": "1"}},
                         log_dir=self.log_dir(),
+                        log_line_prefixes={0: "[rank0]:", 1: "[rank1]:"},
                         redirects=redirs,
                     )
 
@@ -641,6 +642,7 @@ if not (TEST_WITH_DEV_DBG_ASAN or IS_WINDOWS or IS_MACOS):
                 args={0: ("hello",), 1: ("world",)},
                 envs={0: {"RANK": "0"}, 1: {"RANK": "1"}},
                 log_dir=self.log_dir(),
+                log_line_prefixes={0: "[rank0]:", 1: "[rank1]:"},
                 start_method="spawn",
                 redirects={0: Std.ERR, 1: Std.NONE},
                 tee={0: Std.OUT, 1: Std.ERR},

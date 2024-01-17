@@ -1,7 +1,5 @@
-#include <ATen/native/TensorTransformations.h>
-
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/NamedTensorUtils.h>
-#include <ATen/NativeFunctions.h>
 #if defined(C10_MOBILE) && defined(USE_XNNPACK)
 #include <ATen/native/xnnpack/Engine.h>
 #endif
@@ -9,8 +7,17 @@
 
 #include <ATen/native/cpu/ChannelShuffleKernel.h>
 
-namespace at {
-namespace native {
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/channel_shuffle_native.h>
+#include <ATen/ops/empty.h>
+#include <ATen/ops/native_channel_shuffle.h>
+#include <ATen/ops/native_channel_shuffle_native.h>
+#endif
+
+namespace at::native {
 
 Tensor channel_shuffle_cpu(const Tensor& self, int64_t groups) {
   auto memory_format = self.suggest_memory_format();
@@ -38,12 +45,12 @@ Tensor channel_shuffle(const Tensor& self, int64_t groups) {
 #if defined(C10_MOBILE) && defined(USE_XNNPACK)
   if (self.is_contiguous(MemoryFormat::ChannelsLast) &&
       xnnpack::use_channel_shuffle(self, groups)) {
-    auto output = self.numel() == 0 ? self : xnnpack::channel_shuffle(self, groups);
+    auto output = self.numel() == 0 ? self.alias() : xnnpack::channel_shuffle(self, groups);
     return output;
   }
 #endif
 
-  auto output = self.numel() == 0 ? self : at::native_channel_shuffle(self, groups);
+  auto output = self.numel() == 0 ? self.alias() : at::native_channel_shuffle(self, groups);
   return namedinference::propagate_names_if_nonempty(
       output,
       self.has_names() ? self.names() : at::ArrayRef<Dimname>{});
@@ -78,4 +85,4 @@ Tensor math_channel_shuffle(const Tensor& self, int64_t groups) {
 
 DEFINE_DISPATCH(channel_shuffle_kernel);
 
-}} // namespace at::native
+} // namespace at::native

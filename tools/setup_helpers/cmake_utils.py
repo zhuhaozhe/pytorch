@@ -51,7 +51,7 @@ def get_cmake_cache_variables_from_file(
       dict: A ``dict`` containing the value of cached CMake variables.
     """
 
-    results = dict()
+    results = {}
     for i, line in enumerate(cmake_cache_file, 1):
         line = line.strip()
         if not line or line.startswith(("#", "//")):
@@ -71,9 +71,7 @@ def get_cmake_cache_variables_from_file(
             r'("?)(.+?)\1(?::\s*([a-zA-Z_-][a-zA-Z0-9_-]*)?)?\s*=\s*(.*)', line
         )
         if matched is None:  # Illegal line
-            raise ValueError(
-                "Unexpected line {} in {}: {}".format(i, repr(cmake_cache_file), line)
-            )
+            raise ValueError(f"Unexpected line {i} in {repr(cmake_cache_file)}: {line}")
         _, variable, type_, value = matched.groups()
         if type_ is None:
             type_ = ""

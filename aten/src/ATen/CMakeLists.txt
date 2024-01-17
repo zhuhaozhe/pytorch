@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
 
 if(NOT MSVC)
@@ -32,6 +32,8 @@ set_bool(AT_BLAS_F2C BLAS_F2C)
 set_bool(AT_BLAS_USE_CBLAS_DOT BLAS_USE_CBLAS_DOT)
 set_bool(AT_MAGMA_ENABLED USE_MAGMA)
 set_bool(CAFFE2_STATIC_LINK_CUDA_INT CAFFE2_STATIC_LINK_CUDA)
+set_bool(AT_CUDNN_ENABLED CAFFE2_USE_CUDNN)
+set_bool(AT_CUSPARSELT_ENABLED CAFFE2_USE_CUSPARSELT)
 
 configure_file(Config.h.in "${CMAKE_CURRENT_SOURCE_DIR}/Config.h")
 # TODO: Do not generate CUDAConfig.h for ROCm BUILDS
@@ -56,8 +58,8 @@ if(NOT BUILD_CAFFE2 AND NOT BUILD_LITE_INTERPRETER)
   EXCLUDE(ATen_CORE_TEST_SRCS "${ATen_CORE_TEST_SRCS}" ${ATen_CORE_EXCLUDED_TEST_SRCS})
 endif()
 
-file(GLOB base_h "*.h" "detail/*.h" "cpu/*.h" "cpu/vec/vec512/*.h" "cpu/vec/vec256/*.h" "cpu/vec/*.h" "quantized/*.h")
-file(GLOB base_cpp "*.cpp" "detail/*.cpp" "cpu/*.cpp")
+file(GLOB base_h "*.h" "detail/*.h" "cpu/*.h" "cpu/vec/vec512/*.h" "cpu/vec/vec256/*.h" "cpu/vec/vec256/vsx/*.h" "cpu/vec/vec256/zarch/*.h" "cpu/vec/*.h" "quantized/*.h" "functorch/*.h")
+file(GLOB base_cpp "*.cpp" "detail/*.cpp" "cpu/*.cpp" "functorch/*.cpp")
 file(GLOB cuda_h "cuda/*.h" "cuda/detail/*.h" "cuda/*.cuh" "cuda/detail/*.cuh")
 file(GLOB cuda_cpp "cuda/*.cpp" "cuda/detail/*.cpp")
 file(GLOB cuda_nvrtc_stub_h "cuda/nvrtc_stub/*.h")
@@ -83,7 +85,7 @@ file(GLOB native_cpp "native/*.cpp")
 file(GLOB native_mkl_cpp "native/mkl/*.cpp")
 file(GLOB native_mkldnn_cpp "native/mkldnn/*.cpp")
 file(GLOB vulkan_cpp "vulkan/*.cpp")
-file(GLOB native_vulkan_cpp "native/vulkan/*.cpp" "native/vulkan/api/*.cpp" "native/vulkan/ops/*.cpp")
+file(GLOB native_vulkan_cpp "native/vulkan/*.cpp" "native/vulkan/api/*.cpp" "native/vulkan/impl/*.cpp" "native/vulkan/ops/*.cpp")
 
 # Metal
 file(GLOB metal_h "metal/*.h")
@@ -123,6 +125,7 @@ file(GLOB native_ao_sparse_h
             "native/ao_sparse/quantized/cpu/*.h")
 file(GLOB native_quantized_h "native/quantized/*.h" "native/quantized/cpu/*.h" "native/quantized/cudnn/*.h")
 file(GLOB native_cpu_h "native/cpu/*.h")
+file(GLOB native_utils_h "native/utils/*.h")
 
 file(GLOB native_cuda_cu "native/cuda/*.cu")
 file(GLOB native_cuda_cpp "native/cuda/*.cpp")
@@ -130,15 +133,13 @@ file(GLOB native_cuda_h "native/cuda/*.h" "native/cuda/*.cuh")
 file(GLOB native_cuda_linalg_cpp "native/cuda/linalg/*.cpp")
 file(GLOB native_hip_h "native/hip/*.h" "native/hip/*.cuh")
 file(GLOB native_cudnn_cpp "native/cudnn/*.cpp")
-file(GLOB native_nested_cuda_cu "native/nested/cuda/*.cu")
-file(GLOB native_nested_cuda_cpp "native/nested/cuda/*.cpp")
 file(GLOB native_sparse_cuda_cu "native/sparse/cuda/*.cu")
 file(GLOB native_sparse_cuda_cpp "native/sparse/cuda/*.cpp")
 file(GLOB native_quantized_cuda_cu "native/quantized/cuda/*.cu")
 file(GLOB native_quantized_cuda_cpp "native/quantized/cuda/*.cpp")
 file(GLOB native_quantized_cudnn_cpp "native/quantized/cudnn/*.cpp")
-file(GLOB native_transformers_cuda_cu "native/transformers/cuda/*.cu")
-file(GLOB native_transformers_cuda_cpp "native/transformers/cuda/*.cpp")
+file(GLOB native_nested_cuda_cu "native/nested/cuda/*.cu")
+file(GLOB native_nested_cuda_cpp "native/nested/cuda/*.cpp")
 
 file(GLOB native_hip_hip "native/hip/*.hip")
 file(GLOB native_hip_cpp "native/hip/*.cpp")
@@ -151,10 +152,45 @@ file(GLOB native_sparse_hip_hip "native/sparse/hip/*.hip")
 file(GLOB native_sparse_hip_cpp "native/sparse/hip/*.cpp")
 file(GLOB native_quantized_hip_hip "native/quantized/hip/*.hip")
 file(GLOB native_quantized_hip_cpp "native/quantized/hip/*.cpp")
+file(GLOB native_transformers_cuda_cu "native/transformers/cuda/*.cu")
+file(GLOB native_transformers_cuda_cpp "native/transformers/cuda/*.cpp")
 file(GLOB native_transformers_hip_hip "native/transformers/hip/*.hip")
 file(GLOB native_transformers_hip_cpp "native/transformers/hip/*.cpp")
 file(GLOB native_quantized_cudnn_hip_cpp "native/quantized/cudnn/hip/*.cpp")
 file(GLOB native_utils_cpp "native/utils/*.cpp")
+
+# flash_attention sources
+file(GLOB flash_attention_cuda_cu "native/transformers/cuda/flash_attn/*.cu")
+file(GLOB flash_attention_cuda_kernels_cu "native/transformers/cuda/flash_attn/kernels/*.cu")
+file(GLOB flash_attention_cuda_cpp "native/transformers/cuda/flash_attn/*.cpp")
+
+# flash_attention sources
+file(GLOB flash_attention_hip_hip "native/transformers/hip/flash_attn/*.hip")
+file(GLOB flash_attention_src_hip_hip "native/transformers/hip/flash_attn/src/*.hip")
+
+#Mem_eff attention sources
+file(GLOB mem_eff_attention_cuda_cu "native/transformers/cuda/mem_eff_attention/*.cu")
+file(GLOB mem_eff_attention_cuda_kernels_cu "native/transformers/cuda/mem_eff_attention/kernels/*.cu")
+file(GLOB mem_eff_attention_cuda_cpp "native/transformers/cuda/mem_eff_attention/*.cpp")
+
+if(USE_FLASH_ATTENTION)
+  list(APPEND native_transformers_cuda_cu ${flash_attention_cuda_cu})
+  list(APPEND native_transformers_cuda_cu ${flash_attention_cuda_kernels_cu})
+  list(APPEND native_transformers_cuda_cpp ${flash_attention_cuda_cpp})
+  list(APPEND FLASH_ATTENTION_CUDA_SOURCES ${flash_attention_cuda_cu} ${flash_attention_cuda_kernels_cu})
+  list(APPEND ATen_ATTENTION_KERNEL_SRCS ${flash_attention_cuda_kernels_cu})
+
+  list(APPEND native_transformers_hip_hip ${flash_attention_hip_hip})
+  list(APPEND native_transformers_src_hip_hip ${flash_attention_src_hip_hip})
+endif()
+
+if(USE_MEM_EFF_ATTENTION)
+  list(APPEND native_transformers_cuda_cu ${mem_eff_attention_cuda_cu})
+  list(APPEND native_transformers_cuda_cu ${mem_eff_attention_cuda_kernels_cu})
+  list(APPEND native_transformers_cuda_cpp ${mem_eff_attention_cuda_cpp})
+  list(APPEND MEM_EFF_ATTENTION_CUDA_SOURCES ${native_transformers_cuda_cu} ${mem_eff_attention_cuda_cu} ${mem_eff_attention_cuda_kernels_cu})
+  list(APPEND ATen_ATTENTION_KERNEL_SRCS ${mem_eff_attention_cuda_kernels_cu})
+endif()
 
 # XNNPACK
 file(GLOB native_xnnpack "native/xnnpack/*.cpp")
@@ -255,10 +291,34 @@ endif()
 
 if(USE_ROCM)
   list(APPEND ATen_HIP_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/hip)
-  set(ATen_HIP_SRCS ${ATen_HIP_SRCS} ${hip_hip} ${native_hip_hip} ${native_nested_hip_hip} ${native_sparse_hip_hip} ${native_quantized_hip_hip} ${native_transformers_hip_hip})
+  list(APPEND ATen_HIP_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/composable_kernel/include)
+  list(APPEND ATen_HIP_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/composable_kernel/library/include)
+  list(APPEND ATen_HIP_SRCS
+    ${ATen_HIP_SRCS}
+    ${hip_hip}
+    ${native_hip_hip}
+    ${native_nested_hip_hip}
+    ${native_sparse_hip_hip}
+    ${native_quantized_hip_hip}
+    ${native_transformers_hip_hip} ${native_transformers_src_hip_hip}
+  )
   # TODO: Codegen separate files for HIP and use those (s/cuda_generated_sources/hip_generated_sources)
-  set(all_hip_cpp ${native_nested_hip_cpp} ${native_sparse_hip_cpp} ${native_quantized_hip_cpp} ${native_transformers_hip_cpp} ${native_quantized_cudnn_hip_cpp} ${hip_cpp} ${native_hip_cpp} ${native_hip_linalg_cpp} ${cuda_generated_sources} ${ATen_HIP_SRCS})
-  set(all_hip_cpp ${native_miopen_cpp} ${native_cudnn_hip_cpp} ${miopen_cpp} ${all_hip_cpp})
+  list(APPEND all_hip_cpp
+    ${native_nested_hip_cpp}
+    ${native_sparse_hip_cpp}
+    ${native_quantized_hip_cpp}
+    ${native_transformers_hip_cpp}
+    ${native_quantized_cudnn_hip_cpp}
+    ${hip_cpp}
+    ${native_hip_cpp}
+    ${native_hip_linalg_cpp}
+    ${cuda_generated_sources}
+    ${ATen_HIP_SRCS}
+    ${native_miopen_cpp}
+    ${native_cudnn_hip_cpp}
+    ${miopen_cpp}
+    ${all_hip_cpp}
+  )
 endif()
 
 list(APPEND ATen_CPU_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/..)
@@ -346,7 +406,9 @@ if(MKLDNN_FOUND)
   list(APPEND ATen_CPU_DEPENDENCY_LIBS ${MKLDNN_LIBRARIES})
 endif(MKLDNN_FOUND)
 
-list(APPEND ATen_CPU_DEPENDENCY_LIBS cpuinfo)
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(s390x|ppc64le)$")
+  list(APPEND ATen_CPU_DEPENDENCY_LIBS cpuinfo)
+endif()
 
 if(NOT MSVC AND NOT EMSCRIPTEN AND NOT INTERN_BUILD_MOBILE)
   # Preserve values for the main build
@@ -415,28 +477,35 @@ if(NOT MSVC AND NOT EMSCRIPTEN AND NOT INTERN_BUILD_MOBILE)
 endif()
 
 if(USE_CUDA AND NOT USE_ROCM)
+  list(APPEND ATen_CUDA_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/cutlass/include)
   if($ENV{ATEN_STATIC_CUDA})
     list(APPEND ATen_CUDA_DEPENDENCY_LIBS
       ${CUDA_LIBRARIES}
-      ${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcusparse_static.a
-      ${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcurand_static.a
-      ${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcufft_static_nocallback.a
-      )
+      CUDA::cusparse_static
+      CUDA::cufft_static_nocallback
+    )
    if(NOT BUILD_LAZY_CUDA_LINALG)
-     list(APPEND ATen_CUDA_DEPENDENCY_LIBS
-       ${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcusolver_static.a
-       ${CUDA_TOOLKIT_ROOT_DIR}/lib64/liblapack_static.a     # needed for libcusolver_static
+     if(CUDA_VERSION_MAJOR LESS_EQUAL 11)
+       list(APPEND ATen_CUDA_DEPENDENCY_LIBS
+         CUDA::cusolver_static
+         ${CUDAToolkit_LIBRARY_DIR}/liblapack_static.a     # needed for libcusolver_static
        )
+     elseif(CUDA_VERSION_MAJOR GREATER_EQUAL 12)
+       list(APPEND ATen_CUDA_DEPENDENCY_LIBS
+         CUDA::cusolver_static
+         ${CUDAToolkit_LIBRARY_DIR}/libcusolver_lapack_static.a     # needed for libcusolver_static
+       )
+     endif()
    endif()
   else()
     list(APPEND ATen_CUDA_DEPENDENCY_LIBS
       ${CUDA_LIBRARIES}
-      ${CUDA_cusparse_LIBRARY}
-      ${CUDA_curand_LIBRARY}
-      )
+      CUDA::cusparse
+      CUDA::cufft
+    )
    if(NOT BUILD_LAZY_CUDA_LINALG)
      list(APPEND ATen_CUDA_DEPENDENCY_LIBS
-       ${CUDA_cusolver_LIBRARY}
+       CUDA::cusolver
      )
    endif()
   endif()
@@ -445,8 +514,10 @@ if(USE_CUDA AND NOT USE_ROCM)
     list(APPEND ATen_CUDA_DEPENDENCY_LIBS ${CUDNN_LIBRARIES})
   endif()
   if($ENV{ATEN_STATIC_CUDA})
-    list(APPEND ATen_CUDA_DEPENDENCY_LIBS "${CUDA_TOOLKIT_ROOT_DIR}/lib64/libculibos.a")
-    list(APPEND ATen_CUDA_DEPENDENCY_LIBS "${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcudart_static.a")
+    list(APPEND ATen_CUDA_DEPENDENCY_LIBS
+      CUDA::culibos
+      CUDA::cudart_static
+    )
   endif($ENV{ATEN_STATIC_CUDA})
 endif()
 
@@ -467,11 +538,6 @@ endif()
       endif($ENV{TH_BINARY_BUILD})
     endif(MSVC)
   endif(USE_MAGMA)
-
-# NB: We're relying on cmake/Dependencies.cmake to appropriately setup HIP dependencies.
-# In principle we could duplicate them, but handling the rocblas
-# dependency is nontrivial.  So better not to copy-paste.
-# Look for Note [rocblas cmake bug]
 
 # Include CPU paths for CUDA/HIP as well
 list(APPEND ATen_CUDA_INCLUDE ${ATen_CPU_INCLUDE})
@@ -513,7 +579,7 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cmake-exports/ATenConfig.cmake"
 
 set(INSTALL_HEADERS ${base_h} ${ATen_CORE_HEADERS})
 if(NOT INTERN_BUILD_MOBILE)
-  list(APPEND INSTALL_HEADERS ${native_h} ${native_cpu_h} ${native_ao_sparse_h} ${native_quantized_h} ${cuda_h} ${native_cuda_h} ${native_hip_h} ${cudnn_h} ${hip_h} ${miopen_h})
+  list(APPEND INSTALL_HEADERS ${native_h} ${native_cpu_h} ${native_ao_sparse_h} ${native_quantized_h} ${cuda_h} ${native_cuda_h} ${native_hip_h} ${cudnn_h} ${hip_h} ${mps_h} ${native_mps_h} ${native_utils_h} ${miopen_h})
   # Metal
   if(USE_PYTORCH_METAL_EXPORT)
     # Add files needed from exporting metal models(optimized_for_mobile)
@@ -535,7 +601,7 @@ endif()
 # https://stackoverflow.com/questions/11096471/how-can-i-install-a-hierarchy-of-files-using-cmake
 foreach(HEADER  ${INSTALL_HEADERS})
   string(REPLACE "${CMAKE_CURRENT_SOURCE_DIR}/" "ATen/" HEADER_SUB ${HEADER})
-  string(REPLACE "${${CMAKE_PROJECT_NAME}_SOURCE_DIR}/" "" HEADER_SUB ${HEADER_SUB})
+  string(REPLACE "${Torch_SOURCE_DIR}/" "" HEADER_SUB ${HEADER_SUB})
   get_filename_component(DIR ${HEADER_SUB} DIRECTORY)
   install(FILES ${HEADER} DESTINATION "${AT_INSTALL_INCLUDE_DIR}/${DIR}")
 endforeach()
@@ -593,6 +659,7 @@ set(ATen_MOBILE_BENCHMARK_SRCS ${ATen_MOBILE_BENCHMARK_SRCS} PARENT_SCOPE)
 set(ATen_MOBILE_TEST_SRCS ${ATen_MOBILE_TEST_SRCS} ${ATen_VULKAN_TEST_SRCS} PARENT_SCOPE)
 set(ATen_VEC_TEST_SRCS  ${ATen_VEC_TEST_SRCS} PARENT_SCOPE)
 set(ATen_QUANTIZED_TEST_SRCS ${ATen_QUANTIZED_TEST_SRCS} PARENT_SCOPE)
+set(ATen_MPS_TEST_SRCS ${ATen_MPS_TEST_SRCS} PARENT_SCOPE)
 set(ATen_CPU_INCLUDE ${ATen_CPU_INCLUDE} PARENT_SCOPE)
 set(ATen_THIRD_PARTY_INCLUDE ${ATen_THIRD_PARTY_INCLUDE} PARENT_SCOPE)
 set(ATen_CUDA_INCLUDE ${ATen_CUDA_INCLUDE} PARENT_SCOPE)
@@ -601,3 +668,6 @@ set(ATen_VULKAN_INCLUDE ${ATen_VULKAN_INCLUDE} PARENT_SCOPE)
 set(ATen_CPU_DEPENDENCY_LIBS ${ATen_CPU_DEPENDENCY_LIBS} PARENT_SCOPE)
 set(ATen_CUDA_DEPENDENCY_LIBS ${ATen_CUDA_DEPENDENCY_LIBS} PARENT_SCOPE)
 set(ATen_HIP_DEPENDENCY_LIBS ${ATen_HIP_DEPENDENCY_LIBS} PARENT_SCOPE)
+set(FLASH_ATTENTION_CUDA_SOURCES ${FLASH_ATTENTION_CUDA_SOURCES} PARENT_SCOPE)
+set(MEM_EFF_ATTENTION_CUDA_SOURCES ${MEM_EFF_ATTENTION_CUDA_SOURCES} PARENT_SCOPE)
+set(ATen_ATTENTION_KERNEL_SRCS ${ATen_ATTENTION_KERNEL_SRCS} PARENT_SCOPE)

@@ -62,9 +62,42 @@ void sym_size(Stack& stack) {
   auto t = std::move(pop(stack)).toTensor();
   pack(stack, t.sym_sizes().vec());
 }
+void sym_size_int(Stack& stack) {
+  auto dim = pop(stack).toInt();
+  auto t = pop(stack).toTensor();
+  push(stack, t.sym_sizes()[dim]);
+}
+void sym_stride_int(Stack& stack) {
+  auto dim = pop(stack).toInt();
+  auto t = pop(stack).toTensor();
+  push(stack, t.sym_strides()[dim]);
+}
+
+void sym_numel(Stack& stack) {
+  auto t = std::move(pop(stack)).toTensor();
+  push(stack, t.sym_numel());
+}
+
+void sym_storage_offset(Stack& stack) {
+  auto t = std::move(pop(stack)).toTensor();
+  push(stack, t.sym_storage_offset());
+}
+
+void sym_stride(Stack& stack) {
+  auto t = std::move(pop(stack)).toTensor();
+  pack(stack, t.sym_strides().vec());
+}
 
 void device(Stack& stack) {
   push(stack, pop(stack).toTensor().device());
+}
+
+void device_with_index(Stack& stack) {
+  std::string type = pop(stack).toStringRef();
+  int index = pop(stack).toInt();
+  std::string device_str = type + ":" + std::to_string(index);
+  auto device = c10::Device(device_str);
+  push(stack, device);
 }
 
 void dtype(Stack& stack) {
@@ -147,7 +180,10 @@ void toList(Stack& stack) {
       (out_ty == at::FloatType::get() && t.is_floating_point()) ||
           (out_ty == at::ComplexType::get() && t.is_complex()) ||
           tryScalarTypeFromJitType(*out_ty) == t.scalar_type(),
-      "Output annotation element type and runtime tensor element type must match for tolist()");
+      "Output annotation element type and runtime tensor element type must match for tolist(): ",
+      *tryScalarTypeFromJitType(*out_ty),
+      " vs ",
+      t.scalar_type());
 
   // Check that the dimension of the Tensor matches that of the
   // annotation.

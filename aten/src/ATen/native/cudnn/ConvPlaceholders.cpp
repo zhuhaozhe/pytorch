@@ -1,6 +1,16 @@
-#include <ATen/ATen.h>
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/core/Tensor.h>
 #include <ATen/cuda/CUDAConfig.h> // for the definition of AT_CUDNN_ENABLED
-#include <ATen/native/ConvUtils.h>
+
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/cudnn_convolution_add_relu_native.h>
+#include <ATen/ops/cudnn_convolution_native.h>
+#include <ATen/ops/cudnn_convolution_relu_native.h>
+#include <ATen/ops/cudnn_convolution_transpose_native.h>
+#endif
 
 namespace at { namespace native {
 
@@ -19,6 +29,13 @@ at::Tensor cudnn_convolution(
     IntArrayRef padding, IntArrayRef stride, IntArrayRef dilation,
     int64_t groups, bool benchmark, bool deterministic, bool allow_tf32) {
   AT_ERROR("cudnn_convolution: ATen not compiled with cuDNN support");
+}
+
+at::Tensor& cudnn_convolution_out(
+    const Tensor& input_t, const Tensor& weight_t, IntArrayRef padding,
+    IntArrayRef stride, IntArrayRef dilation, int64_t groups, bool benchmark,
+    bool deterministic, bool allow_tf32, Tensor& output_t) {
+  AT_ERROR("cudnn_convolution_out: ATen not compiled with cuDNN support");
 }
 
 at::Tensor cudnn_convolution_backward_input(

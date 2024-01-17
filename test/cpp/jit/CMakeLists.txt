@@ -95,18 +95,16 @@ set(JIT_TEST_SRCS
   ${JIT_TEST_ROOT}/test_flatbuffer.cpp
 )
 
-if(USE_CUDA)
-  list(APPEND JIT_TEST_SRCS ${TORCH_SRC_DIR}/csrc/jit/codegen/cuda/test/test_gpu.cpp)
-  list(APPEND JIT_TEST_SRCS ${TORCH_SRC_DIR}/csrc/jit/codegen/cuda/test/test_gpu_fused_reduction.cpp)
-  list(APPEND JIT_TEST_SRCS ${TORCH_SRC_DIR}/csrc/jit/codegen/cuda/test/test_gpu_shift.cpp)
-  list(APPEND JIT_TEST_SRCS ${TORCH_SRC_DIR}/csrc/jit/codegen/cuda/test/test_gpu_tensorcore.cpp)
-  list(APPEND JIT_TEST_SRCS ${TORCH_SRC_DIR}/csrc/jit/codegen/cuda/test/test_gpu_view.cpp)
-endif()
-
 add_executable(test_jit
   ${TORCH_ROOT}/test/cpp/common/main.cpp
   ${JIT_TEST_SRCS}
 )
+
+# We also build with UBSAN flag in build_asan.h
+if(USE_ASAN)
+  target_compile_options(test_jit PRIVATE "-fsanitize=undefined")
+  target_link_libraries(test_jit PRIVATE "-fsanitize=undefined")
+endif()
 
 target_link_libraries(
   test_jit PRIVATE flatbuffers)
@@ -132,7 +130,7 @@ endif(MSVC)
 target_link_libraries(test_jit PRIVATE ${JIT_TEST_DEPENDENCIES})
 target_include_directories(test_jit PRIVATE ${ATen_CPU_INCLUDE})
 if(NOT MSVC)
-  target_compile_options(test_jit PRIVATE -Wno-unused-variable)
+  target_compile_options(test_jit PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wno-unused-variable>)
 endif()
 
 if(LINUX)
@@ -141,21 +139,15 @@ if(LINUX)
 endif()
 
 if(USE_CUDA)
-  target_link_libraries(test_jit PRIVATE
-    ${CUDA_LIBRARIES}
-    ${CUDA_NVRTC_LIB}
-    ${CUDA_CUDA_LIB}
-    ${TORCH_CUDA_LIBRARIES})
-
   target_compile_definitions(test_jit PRIVATE USE_CUDA)
   # Suppress sign compare checks for NVFUSER JIT tests
   if(NOT MSVC)
-    target_compile_options(test_jit PRIVATE -Wno-sign-compare)
+    target_compile_options(test_jit PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wno-sign-compare>)
   endif()
 elseif(USE_ROCM)
   target_link_libraries(test_jit PRIVATE
     ${ROCM_HIPRTC_LIB}
-    ${PYTORCH_HIP_HCC_LIBRARIES}
+    ${PYTORCH_HIP_LIBRARIES}
     ${TORCH_CUDA_LIBRARIES})
 
   target_compile_definitions(test_jit PRIVATE USE_ROCM)

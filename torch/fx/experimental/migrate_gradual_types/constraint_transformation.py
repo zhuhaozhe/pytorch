@@ -2,7 +2,8 @@
 import copy
 import itertools
 from torch.fx.experimental.migrate_gradual_types.constraint_generator import BinConstraintT, MAX_TENSOR_RANK
-from torch.fx.experimental.migrate_gradual_types.constraint import T, BinConstraintD, Conj, Constraint, DVar, TVar
+from torch.fx.experimental.migrate_gradual_types.constraint import T, BinConstraintD, Conj, Constraint, DVar, TVar, \
+    Transpose
 from torch.fx.experimental.migrate_gradual_types.constraint import Disj, TGreatestUpperBound
 from torch.fx.experimental.migrate_gradual_types.constraint import DGreatestUpperBound
 from torch.fx.experimental.migrate_gradual_types.constraint import CalcConv, CalcMaxPool
@@ -38,6 +39,28 @@ def valid_index(index, dims):
         return F()
 
 
+@register_transformation_rule(Transpose)
+def transform_transpose(constraint, counter):
+    """
+    Similar to a sequence of two index-selects
+    """
+    dims, counter = gen_tensor_dims(constraint.tensor_size, counter)
+    is_valid_index1 = valid_index(constraint.index1, dims)
+    is_valid_index2 = valid_index(constraint.index2, dims)
+    new_dims = copy.deepcopy(dims)
+    nat_constraints = gen_nat_constraints(dims)
+
+    if is_valid_index1 == T() and is_valid_index2 == T():
+        new_dims[constraint.index1] = dims[constraint.index2]
+        new_dims[constraint.index2] = dims[constraint.index1]
+
+    transformed_constraint = Conj([BinConstraintT(constraint.input_var, TensorType(dims), op_eq),
+                                   *nat_constraints,
+                                   is_valid_index1, is_valid_index2,
+                                   BinConstraintT(constraint.output, TensorType(new_dims), op_eq)])
+    return transformed_constraint, counter
+
+
 @register_transformation_rule(IndexSelect)
 def transform_index_select(constraint, counter):
     """
@@ -52,9 +75,8 @@ def transform_index_select(constraint, counter):
     # if the index is valid then replace the input dimension with the new dimension
     # otherwise the dimension will not be replaced and the clause will contain False
     if is_valid_index == T():
-        new_dims = copy.deepcopy((dims))
+        new_dims = copy.deepcopy(dims)
         new_dims[constraint.index] = constraint.dim_replace
-
 
     transformed_constraint = Conj([BinConstraintT(constraint.input_var, TensorType(dims), op_eq),
                                    *nat_constraints,
@@ -63,6 +85,7 @@ def transform_index_select(constraint, counter):
 
     # print(constraints)
     return transformed_constraint, counter
+
 
 @register_transformation_rule(GetItem)
 def transform_get_item(constraint, counter):
@@ -117,7 +140,7 @@ def transform_get_item_tensor(constraint, counter):
     When the index is a tuple, then the output will be a tensor
     TODO: we have to check if this is the case for all HF models
 
-    The cases we are covrering here are a tuple with one of:
+    The cases we are covering here are a tuple with one of:
      - slice with default argument
      - None
 
@@ -184,7 +207,7 @@ def generate_binconstraint_t(constraint, counter):
         if constraint.lhs == Dyn:
             return T(), counter
         elif isinstance(constraint.lhs, TensorType):
-            is_fully_static = all([d != Dyn for d in constraint.lhs.__args__])
+            is_fully_static = all(d != Dyn for d in constraint.lhs.__args__)
             if is_fully_static:
                 return BinConstraintT(constraint.lhs, constraint.rhs, op_eq), counter
             else:
@@ -380,7 +403,7 @@ def generate_calc_product(constraint, counter):
     for p in all_possibilities:
         p = list(p)
         # this tells us there is a dynamic variable
-        contains_dyn = not(all([constraint.op == op_neq for constraint in p]))
+        contains_dyn = not all(constraint.op == op_neq for constraint in p)
         if contains_dyn:
             mid_var = [Dyn]
             total_constraints = lhs + mid_var + rhs
@@ -415,7 +438,7 @@ def generate_reshape(constraint, counter):
 
     target = constraint.target.__args__
 
-    is_fully_static = all([d != Dyn for d in target])
+    is_fully_static = all(d != Dyn for d in target)
 
     # dynamic tensor
     c1_dyn = BinConstraintT(constraint.src, Dyn, op_eq)
@@ -581,7 +604,7 @@ def calc_last_two_dims(constraint, d: List[DVar]):
 
     """
 
-    assert isinstance(constraint, CalcConv) or isinstance(constraint, CalcMaxPool)
+    assert isinstance(constraint, (CalcConv, CalcMaxPool))
 
     b3 = constraint.matching_constraint[2]
     b4 = constraint.matching_constraint[3]
@@ -677,7 +700,7 @@ def gen_all_reshape_possibilities(list_of_dims, target):
         list_of_dims: The input list of dimensions
         target: The tensor we want to reshape to
 
-    Returns: A disjuncition of transformed reshape constraints
+    Returns: A disjunction of transformed reshape constraints
 
     """
     all_possibilities = generate_all_int_dyn_dim_possibilities(list_of_dims)
@@ -780,7 +803,7 @@ def apply_padding(e1_var: TVar,
         broadcast_padding = []
 
         # for every padding size, we also consider broadcasting
-        for j in range((len(d2) - i)):
+        for j in range(len(d2) - i):
             broadcast_padding.append(broadcast_dim(simulate_padding, d2, d11, d12, j, True))
 
         # we consider the possibilities for broadcasting for every dimension. Since we already
@@ -807,8 +830,8 @@ def no_broadcast_dim_with_index(d1: List[DVar],
                                 i: int):
     """
     Args:
-        d1: inpput 1
-        d2: inpput 2
+        d1: input 1
+        d2: input 2
         d3: simulated broadcasting for input 1
         d4: simulated broadcasting for input 2
         i: the rank of the resulting tensor addition
@@ -948,7 +971,7 @@ def gen_greatest_upper_bound(constraint: TGreatestUpperBound, counter: int):
 def generate_all_broadcasting_possibilities_no_padding(d1: List[DVar], d2: List[DVar], d11: List[DVar], d12: List[DVar]):
     """
     Generate broadcasting constraints assuming no padding. Broadcasting can happen at any dimension.
-    We look at all combinations for all dimendions in d1 and d2
+    We look at all combinations for all dimensions in d1 and d2
     Args:
         d1: input1 dimensions
         d2: input2 dimensions
@@ -994,7 +1017,7 @@ def gen_broadcasting_constraints(e1: TVar, e2: TVar, e11: TVar, e12: TVar, i: in
     """
     dims, counter = gen_lists_of_dims(4, i, counter)
     [d1, d2, d3, d4] = dims
-    nat_dims_i = gen_nat_constraints(list(itertools.chain(*dims)))
+    nat_dims_i = gen_nat_constraints(list(itertools.chain.from_iterable(dims)))
 
     initialize_tensors_constraints = create_equality_constraints_for_broadcasting(e1, e2, e11, e12,
                                                                                   d1, d2, d3, d4)
