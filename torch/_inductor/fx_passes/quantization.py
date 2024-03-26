@@ -1072,6 +1072,71 @@ def _register_quantization_cat():
         aten.cat,
     )
 
+def _is_valid_qembeddingbag(arg):
+        def fn(match):
+            return True
+        return fn
+
+def _register_quantized_embeddingbag_lowering(
+    pattern,
+):
+    @register_freezing_graph_pattern(
+        pattern,
+        extra_check=_is_valid_qembeddingbag(1),
+    )
+    def qembeddingbag_prepack(match: Match, *args, **kwargs):
+        """
+        Match the pattern:
+        (indices, offsets)
+          |
+        aten._embedding_bag_forward_only.default <- dequant_per_channel <- int8_weight
+
+        Insert weight prepack node and change the pattern to:
+        (indices, offsets)
+          |
+        torch.ops.quantized.embedding_bag_byte <- torch.ops.quantized.embedding_bag_prepack <- int8_weight
+        """
+        graph = match.graph
+        graph.print_tabular()
+        embeddingbag_node = match.output_node()
+        dequant_per_channel = embeddingbag_node.args[0]
+        q_weight = kwargs["q_weight"]
+        with graph.inserting_before(embeddingbag_node):
+            packed_weight_op = torch.ops.quantized.embedding_bag_prepack
+            prepack_weight_node = graph.call_function(
+                packed_weight_op, args=(q_weight, )
+            )
+            new_embeddingbag_args = (
+                prepack_weight_node,
+                kwargs["indices"],
+                kwargs["offsets"],
+            )
+            new_embeddingbag_node = graph.call_function(
+                torch.ops.quantized.embedding_bag_byte, args=new_embeddingbag_args
+            )
+            embeddingbag_node.replace_all_uses_with(new_embeddingbag_node)
+            new_embeddingbag_node.meta.update(embeddingbag_node.meta)
+            graph.erase_node(embeddingbag_node)
+            graph.erase_node(dequant_per_channel)
+        graph.print_tabular()
+        counters["inductor"]["qembeddingbag_weight_prepack_matcher_count"] += 1
+        counters["inductor"]["qembeddingbag_weight_prepack_matcher_nodes"] += len(
+            match.nodes
+        )
+
+    return qembeddingbag_prepack
+
+
+def _register_quantization_embeddingbag_weight_prepack():
+    qembeddingbag_dequant_weight_pattern = CallFunction(
+        aten._embedding_bag_forward_only.default,
+        dequantize_per_channel_weight_pattern,
+        KeywordArg("indices"),
+        KeywordArg("offsets")
+    )
+    _register_quantized_embeddingbag_lowering(
+        qembeddingbag_dequant_weight_pattern,
+    )
 
 def _register_quantized_reshape_lowering(
     pattern,
@@ -1862,7 +1927,6 @@ def _register_qlinear_weight_prepack_pass(
             if dtype == torch.bfloat16:
                 graph.erase_node(weight_to_bf16_node)  # type: ignore[possibly-undefined]
             graph.erase_node(dequant_per_channel)
-
             counters["inductor"]["qlinear_weight_prepack_matcher_count"] += 1
             counters["inductor"]["qlinear_weight_prepack_matcher_nodes"] += len(
                 match.nodes
@@ -2109,3 +2173,4 @@ def _register_quantization_weight_pack_pass():
 
     # Step 3: QLinear weight prepack
     _register_qlinear_weight_prepack()
+    _register_quantization_embeddingbag_weight_prepack()

@@ -1752,6 +1752,43 @@ class TestPatternMatcher(TestPatternMatcherBase):
             check_quantization=True,
         )
 
+    @skipIfNoDynamoSupport
+    @skipIfRocm
+    def test_qembeddingbag(self):
+        class M(torch.nn.Module):
+            def __init__(self, ntables=3, embedding_dim=128, num_embeddings=1000) -> None:
+                super().__init__()
+                self.embs = torch.nn.ModuleDict()
+                for i in range(ntables):
+                    self.embs[str(i)] = torch.nn.EmbeddingBag(num_embeddings=num_embeddings, embedding_dim=embedding_dim, mode='sum')
+
+            def forward(self, indices, offsets):
+                out = []
+                for i, emb in enumerate(self.embs.values()):
+                    res = emb(indices[i], offsets[i], per_sample_weights=None)
+                    out.append(res)
+                return out
+
+        mod = M().eval()
+        indices = [
+            torch.randint(3, (16 * (i + 1),)).to(torch.int32)
+            for i in range(3)
+        ]
+        offsets = [
+            torch.arange(
+                0, 16 * i, (i + 1)
+            ).to(torch.int32)
+            for i in range(3)
+        ]
+        example_inputs = (indices, offsets, )
+        self._test_common(
+            mod,
+            example_inputs,
+            10,
+            49,
+            check_quantization=True,
+        )
+
     # https://github.com/pytorch/pytorch/issues/99841.
     def test_hardtanh_pattern_fallback(self):
         class Model(torch.nn.Module):
